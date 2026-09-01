@@ -4,8 +4,10 @@ import sys
 
 from houston.collector import collect
 from houston.dedup import cap, filter_new
-from houston.frontmatter import Report, write_report
+from houston.frontmatter import Report, read_report, write_report
+from houston.dedup import report_path
 from houston.metrics import can_close_phase, compute, load_all_reports
+from houston.agent import investigate as agent_investigate
 
 
 def cmd_seed(args: argparse.Namespace) -> int:
@@ -70,6 +72,81 @@ def cmd_metrics(args: argparse.Namespace) -> int:
     return 0
 
 
+
+def cmd_investigate(args: argparse.Namespace) -> int:
+    """Runs the E4 agent for real, one claude -p subprocess per finding.
+    Costs money/quota per ADR-0001 -- default cap is deliberately small.
+    Never fabricates a result: a timeout or failure writes state:
+    incomplete, not a guessed report."""
+    findings = collect(window_hours=args.window_hours)
+    new_findings = filter_new(findings)
+    kept, dropped = cap(new_findings, max_findings=args.max_findings)
+    if not kept:
+        print("nothing new to investigate")
+        return 0
+
+    print(f"investigating {len(kept)} of {len(new_findings)} new findings "
+          f"({dropped} dropped by cap) -- max ${args.max_budget_usd} each, "
+          f"{args.timeout_s}s timeout each")
+    total_usd = 0.0
+    for i, finding in enumerate(kept, 1):
+        print(f"  [{i}/{len(kept)}] {finding.fingerprint} ({finding.service}, "
+              f"{finding.reason})...", end=" ", flush=True)
+        result = agent_investigate(
+            finding, max_budget_usd=args.max_budget_usd, timeout_s=args.timeout_s,
+        )
+        total_usd += result.usd
+        if result.state == "incomplete":
+            report = Report.from_finding(finding, state="incomplete", body=(
+                f"Investigation did not complete: {result.error}"
+            ))
+        else:
+            report = Report.from_finding(finding, state="new", body=result.body)
+        report.cost.input_tokens = result.input_tokens
+        report.cost.output_tokens = result.output_tokens
+        report.cost.duration_s = result.duration_s
+        report.cost.usd = result.usd
+        write_result = write_report(report)
+        if write_result.written:
+            print(f"${result.usd:.2f}, {result.state}")
+        else:
+            print(f"QUARANTINED ({write_result.pii_hits})")
+
+    print(f"total spend this run: ${total_usd:.2f}")
+    return 0
+
+
+
+def cmd_promote(args: argparse.Namespace) -> int:
+    """Prints a ready gh issue create command for a report. Never runs it --
+    promoting is a human gesture and the instrument that measures the
+    false-positive rate (see the plan's own E6 design)."""
+    path = report_path(args.fingerprint)
+    if not path.exists():
+        print(f"no report at {path}", file=sys.stderr)
+        return 1
+    report = read_report(path)
+    text = path.read_text()
+    _, _, body = text.split("---", 2)
+
+    # pull the "## Issue body" section out of the investigation body, if present
+    issue_body = body
+    if "## Issue body" in body:
+        issue_body = body.split("## Issue body", 1)[1].strip()
+
+    title = f"[{report['source']}] {report['reason']} in {report.get('service') or 'unknown service'}"
+    escaped_body = issue_body.replace("'", "'\\''")
+    command_lines = [
+        "gh issue create --repo Medprev/medprev-product-backlog \\",
+        f"  --title '{title}' \\",
+        f"  --body '{escaped_body}'",
+    ]
+    print("\n".join(command_lines))
+    print(f"\n# after running the command above, paste the issue URL into "
+          f"{path}'s front-matter (issue: field) and set state: promoted")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="houston")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -85,6 +162,17 @@ def main() -> int:
 
     metrics_p = sub.add_parser("metrics", help="compute FP rate, cost, and phase-close readiness")
     metrics_p.set_defaults(func=cmd_metrics)
+
+    inv_p = sub.add_parser("investigate", help="run the real agent on capped new findings (costs money)")
+    inv_p.add_argument("--window-hours", type=int, default=96)
+    inv_p.add_argument("--max-findings", type=int, default=5, help="deliberately small default -- override once you trust the cost")
+    inv_p.add_argument("--max-budget-usd", default="0.50")
+    inv_p.add_argument("--timeout-s", type=int, default=300)
+    inv_p.set_defaults(func=cmd_investigate)
+
+    promote_p = sub.add_parser("promote", help="print (never run) a ready gh issue create for a report")
+    promote_p.add_argument("fingerprint")
+    promote_p.set_defaults(func=cmd_promote)
 
     args = parser.parse_args()
     return args.func(args)
