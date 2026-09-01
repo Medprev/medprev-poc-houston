@@ -98,3 +98,33 @@ class DatadogClient:
         """Step 2 of 2. Full attributes, including first_seen and regression."""
         data = self._get(f"/api/v2/error-tracking/issues/{issue_id}")
         return data["data"]
+
+    def search_events(
+        self, query: str, window: Window, limit: int = 1000
+    ) -> list[dict[str, Any]]:
+        """POST /api/v2/events/search — one call per page, cursor-paginated.
+        Unlike the Error Tracking search endpoint, `from`/`to` here accept
+        relative date-math strings (e.g. "now-96h"), not just epoch ms —
+        confirmed against the OpenAPI spec; the two v2 search endpoints are
+        not consistent with each other."""
+        events: list[dict[str, Any]] = []
+        cursor: str | None = None
+        while len(events) < limit:
+            page: dict[str, Any] = {"limit": min(1000, limit - len(events))}
+            if cursor:
+                page["cursor"] = cursor
+            body = {
+                "filter": {
+                    "query": query,
+                    "from": f"{window.from_ms}",
+                    "to": f"{window.to_ms}",
+                },
+                "page": page,
+                "sort": "timestamp",
+            }
+            data = self._post("/api/v2/events/search", body)
+            events.extend(item["attributes"] for item in data.get("data", []))
+            cursor = data.get("meta", {}).get("page", {}).get("after")
+            if not cursor or not data.get("data"):
+                break
+        return events

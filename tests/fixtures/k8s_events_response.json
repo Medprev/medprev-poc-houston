@@ -1,0 +1,37 @@
+{
+  "data": [
+    {
+      "attributes": {
+        "message": "%%% \n3 **Unhealthy**: Readiness probe failed: Get \"http://10.0.10.84:3000/public/health-check\": context deadline exceeded\n \n %%%",
+        "tags": [
+          "kube_cluster_name:eks-medprev-online-prd", "kube_namespace:medprev-rest-api",
+          "kube_name:medprev-rest-api-ag-58b5f96bd5-fwq5t", "pod_name:medprev-rest-api-ag-58b5f96bd5-fwq5t",
+          "source:kubernetes", "env:production"
+        ],
+        "timestamp": "2026-09-01T17:52:03Z"
+      }
+    },
+    {
+      "attributes": {
+        "message": "%%% \n2 **Unhealthy**: Readiness probe failed: different pod, same namespace and reason\n \n %%%",
+        "tags": [
+          "kube_cluster_name:eks-medprev-online-prd", "kube_namespace:medprev-rest-api",
+          "kube_name:medprev-rest-api-pp-7dc994795c-2k6sm", "pod_name:medprev-rest-api-pp-7dc994795c-2k6sm",
+          "source:kubernetes", "env:production"
+        ],
+        "timestamp": "2026-09-01T18:20:53Z"
+      }
+    },
+    {
+      "attributes": {
+        "message": "%%% \n1 **FailedGetResourceMetric**: failed to get cpu utilization\n \n %%%",
+        "tags": [
+          "kube_cluster_name:eks-medprev-online-prd", "kube_namespace:medprev-analytics-etl-airflow",
+          "kube_name:medprev-analytics-etl-airflow-main-worker", "source:kubernetes", "env:production"
+        ],
+        "timestamp": "2026-09-01T19:02:31Z"
+      }
+    }
+  ],
+  "meta": {"page": {}}
+}

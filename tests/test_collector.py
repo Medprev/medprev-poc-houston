@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-from houston.collector import collect_error_tracking_findings
+from houston.collector import collect_error_tracking_findings, collect_kubernetes_findings
 from houston.config import Config
 from houston.datadog_client import DatadogClient, Window
 
@@ -88,3 +88,31 @@ def test_observed_count_comes_from_search_step_not_issue_detail(mock_post, mock_
     counts = {f.fingerprint: f.observed_count for f in findings}
     assert counts["et-114e7438-e897-11ef-83c4-da7ad0900002"] == 406
     assert counts["et-c718a87c-a5a3-11f1-b501-da7ad0900002"] == 29
+
+
+def _fake_post_k8s_events(url, headers=None, json=None, timeout=None):
+    assert "/events/search" in url
+    return _FakeResponse(_load("k8s_events_response.json"))
+
+
+@patch("houston.datadog_client.requests.post", side_effect=_fake_post_k8s_events)
+def test_kubernetes_findings_fingerprint_by_namespace_not_workload(mock_post):
+    """Regression test for ADR-0008: measured live that per-workload
+    fingerprinting produces 340.4 distinct/day (over the plan's 30/day
+    gate) vs. 7.1/day at namespace granularity. Two different pods with
+    the same reason in the same namespace must collapse to one finding."""
+    config = Config(dd_api_key="fake", dd_app_key="fake", dd_site="datadoghq.com")
+    client = DatadogClient(config)
+    findings = collect_kubernetes_findings(client, Window.last(96))
+
+    # 3 raw events, 2 in the same namespace+reason (different pods) -> 2 findings, not 3
+    assert len(findings) == 2
+
+    rest_api_finding = next(f for f in findings if f.service == "medprev-rest-api")
+    assert rest_api_finding.observed_count == 2  # both Unhealthy events collapsed
+    assert rest_api_finding.reason == "Unhealthy"
+    assert rest_api_finding.fingerprint == "k8s-eks-medprev-online-prd-Unhealthy-medprev-rest-api"
+
+    airflow_finding = next(f for f in findings if f.service == "medprev-analytics-etl-airflow")
+    assert airflow_finding.observed_count == 1
+    assert airflow_finding.reason == "FailedGetResourceMetric"
