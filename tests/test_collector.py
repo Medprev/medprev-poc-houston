@@ -6,6 +6,7 @@ from unittest.mock import patch
 from houston.collector import (
     collect_error_tracking_findings,
     collect_kubernetes_findings,
+    collect_monitor_findings,
 )
 from houston.config import Config
 from houston.datadog_client import DatadogClient, Window
@@ -119,3 +120,32 @@ def test_kubernetes_findings_fingerprint_by_namespace_not_workload(mock_post):
     airflow_finding = next(f for f in findings if f.service == "medprev-analytics-etl-airflow")
     assert airflow_finding.observed_count == 1
     assert airflow_finding.reason == "FailedGetResourceMetric"
+
+
+def _fake_post_monitor_events(url, headers=None, json=None, timeout=None):
+    assert "/events/search" in url
+    return _FakeResponse(_load("monitor_events_response.json"))
+
+
+@patch("houston.datadog_client.requests.post", side_effect=_fake_post_monitor_events)
+def test_monitor_findings_read_nested_alert_attributes_not_top_level(mock_post):
+    """Regression test: the REST v2 response's real shape nests title/
+    status/priority/monitor under attributes.attributes (AlertEventAttributes),
+    not at the top level alongside message/tags/timestamp. A first version
+    read event["title"] directly and got the fallback value for every
+    single finding, live, against production (2026-09-02)."""
+    config = Config(dd_api_key="fake", dd_app_key="fake", dd_site="datadoghq.com")
+    client = DatadogClient(config)
+    findings = collect_monitor_findings(client, Window.last(96))
+
+    # 3 raw events, 2 share monitor id 229652398 -> 2 findings, not 3
+    assert len(findings) == 2
+
+    sqs_finding = next(f for f in findings if f.fingerprint == "mon-229652398")
+    assert sqs_finding.observed_count == 2
+    assert sqs_finding.reason == "ADM - Execuções SQS com erro"  # from monitor.name, not the bracketed title
+    assert sqs_finding.service == "tribo-core"
+    assert sqs_finding.severity == "high"  # priority:p2 tag
+
+    clearsale_finding = next(f for f in findings if f.fingerprint == "mon-311284089")
+    assert clearsale_finding.severity == "medium"  # no priority tag -> falls back to status:warning

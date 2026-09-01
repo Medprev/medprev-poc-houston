@@ -1,0 +1,47 @@
+{
+  "data": [
+    {
+      "attributes": {
+        "message": "%%% \n🚨 [Logs SQS] 🚨\n\nhttps://app.datadoghq.com/logs?query=...\n\n[[Monitor Status](/monitors/229652398?...)] \n %%%",
+        "tags": ["source:alert", "team:tribo-core", "priority:p2", "monitor"],
+        "timestamp": "2026-08-28T19:38:58Z",
+        "attributes": {
+          "title": "[Triggered] ADM - Execuções SQS com erro",
+          "status": "error",
+          "priority": "normal",
+          "service": "undefined",
+          "monitor": {"id": 229652398, "name": "ADM - Execuções SQS com erro"}
+        }
+      }
+    },
+    {
+      "attributes": {
+        "message": "%%% \n🚨 [Logs SQS] 🚨\n\nhttps://app.datadoghq.com/logs?query=...\n\n[[Monitor Status](/monitors/229652398?...)] \n %%%",
+        "tags": ["source:alert", "team:tribo-core", "priority:p2", "monitor"],
+        "timestamp": "2026-08-29T01:09:58Z",
+        "attributes": {
+          "title": "[Triggered] ADM - Execuções SQS com erro",
+          "status": "error",
+          "priority": "normal",
+          "service": "undefined",
+          "monitor": {"id": 229652398, "name": "ADM - Execuções SQS com erro"}
+        }
+      }
+    },
+    {
+      "attributes": {
+        "message": "%%% \nTaxa de indisponibilidade da ClearSale...\n\n[[Monitor Status](/monitors/311284089?...)] \n %%%",
+        "tags": ["source:alert", "team:squad-sos", "monitor"],
+        "timestamp": "2026-08-30T15:58:09Z",
+        "attributes": {
+          "title": "[Recovered] [Qualidade] ClearSale indisponível",
+          "status": "warning",
+          "priority": "normal",
+          "service": "undefined",
+          "monitor": {"id": 311284089, "name": "[Qualidade] ClearSale indisponível — taxa de fail-closed em pagamento (24h)"}
+        }
+      }
+    }
+  ],
+  "meta": {"page": {}}
+}

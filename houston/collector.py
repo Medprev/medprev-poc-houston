@@ -8,10 +8,16 @@ import re
 from collections import Counter
 
 from houston.datadog_client import DatadogClient, Window
-from houston.fingerprint import error_tracking_fingerprint, k8s_fingerprint
+from houston.fingerprint import (
+    error_tracking_fingerprint,
+    k8s_fingerprint,
+    monitor_fingerprint,
+)
 from houston.models import Finding
 
 _REASON_RE = re.compile(r"\*\*(\w+)\*\*")
+_MONITOR_ID_RE = re.compile(r"/monitors/(\d+)")
+_TITLE_PREFIX_RE = re.compile(r"^(?:\[P\d\]\s*)?\[(Triggered|Recovered|Alert|Warn)\]\s*")
 
 
 def _parse_tags(tags: list[str]) -> dict[str, str]:
@@ -111,6 +117,95 @@ def collect_kubernetes_findings(
     return findings
 
 
+def collect_monitor_findings(
+    client: DatadogClient,
+    window: Window,
+    query: str = "source:alert (status:error OR status:warn)",
+) -> list[Finding]:
+    """Monitor alert events. The REST v2 response's real shape diverges
+    from what its own OpenAPI spec's top-level V2EventAttributes schema
+    suggests -- `title`, `status`, `priority`, `service`, and a structured
+    `monitor: {id, name, ...}` object all live one level deeper, under
+    `attributes.attributes` (the category-specific AlertEventAttributes),
+    not at the top level alongside `message`/`tags`/`timestamp`. Confirmed
+    live (2026-09-02) after a first version read `event["title"]` directly
+    and silently got the fallback value for every single finding.
+
+    Two more things found live, not documented anywhere the plan could
+    have named them:
+    1. The structured `priority` field is useless here -- every real event
+       sampled reports `priority: "normal"` regardless of actual urgency.
+       The real severity signal is the `priority:pN` *tag* (P1-P5), when
+       present; `status` (error|warning) is the fallback.
+    2. Unlike Error Tracking and Kubernetes, `env` is NOT a reliable tag
+       here: of 56 real triggered (status:error|warn) events in a 96h
+       window, only 4 carried an `env` tag at all. Scoping this query by
+       `env:production` (as the other two sources do) would silently drop
+       52 of 56 real incidents -- so this source is deliberately NOT
+       env-scoped.
+
+    `status:ok` events are recoveries (a monitor going back to normal), not
+    incidents, and are excluded by the default query -- same operational
+    call already made for the #houston Slack channel's own Zabbix routing
+    (medprev-product-backlog#5635): recovery notifications are noise, not
+    signal, for anything meant to page or investigate."""
+    events = client.search_events(query, window, limit=5000)
+
+    counts: Counter[str] = Counter()
+    sample_by_fp: dict[str, dict] = {}
+    for event in events:
+        tags = _parse_tags(event.get("tags", []))
+        alert_attrs = event.get("attributes", {})
+        monitor = alert_attrs.get("monitor") or {}
+
+        monitor_id = monitor.get("id")
+        if monitor_id is None:
+            match = _MONITOR_ID_RE.search(event.get("message", ""))
+            if not match:
+                continue  # no monitor id found anywhere -- can't fingerprint, skip
+            monitor_id = match.group(1)
+        monitor_id = str(monitor_id)
+
+        name = monitor.get("name") or _TITLE_PREFIX_RE.sub(
+            "", alert_attrs.get("title", "")
+        ).strip()
+        fp = monitor_fingerprint(monitor_id)
+        counts[fp] += 1
+        sample_by_fp.setdefault(fp, {
+            "monitor_id": monitor_id, "name": name,
+            "team": tags.get("team"), "priority_tag": tags.get("priority"),
+            "status": alert_attrs.get("status"),
+            "timestamp": event.get("timestamp"),
+        })
+
+    findings = []
+    for fp, count in counts.items():
+        sample = sample_by_fp[fp]
+        priority_tag = sample["priority_tag"]
+        if priority_tag in ("p1", "p2"):
+            severity = "high"
+        elif priority_tag == "p3":
+            severity = "medium"
+        elif priority_tag in ("p4", "p5"):
+            severity = "low"
+        else:  # no priority tag on this monitor -- fall back to status
+            severity = "high" if sample["status"] == "error" else "medium"
+        findings.append(Finding(
+            fingerprint=fp,
+            source="monitor",
+            query=query,
+            service=sample["team"],
+            reason=sample["name"] or f"monitor {sample['monitor_id']}",
+            first_seen_ms=None,
+            last_seen_ms=None,
+            observed_count=count,
+            severity=severity,
+            regressed=False,
+            raw=sample,
+        ))
+    return findings
+
+
 def measure_kubernetes_cardinality(
     client: DatadogClient,
     days: int = 7,
@@ -131,10 +226,9 @@ def measure_kubernetes_cardinality(
 
 
 def collect(window_hours: int = DEFAULT_WINDOW_HOURS) -> list[Finding]:
-    """Entry point for `houston run`. Error Tracking and Kubernetes (E2's
-    gate passed at namespace granularity, ADR-0008) are live. Monitor
-    events (`source:alert`) are not implemented yet — see
-    medprev-poc-houston#2."""
+    """Entry point for `houston run`. All three planned sources are live:
+    Error Tracking, Kubernetes (namespace granularity, ADR-0008), and
+    Monitor alert events (ADR-0009)."""
     from houston.config import Config
 
     config = Config.from_env()
@@ -143,4 +237,5 @@ def collect(window_hours: int = DEFAULT_WINDOW_HOURS) -> list[Finding]:
     return (
         collect_error_tracking_findings(client, window)
         + collect_kubernetes_findings(client, window)
+        + collect_monitor_findings(client, window)
     )
