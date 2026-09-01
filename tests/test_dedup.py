@@ -42,3 +42,29 @@ def test_cap_keeps_highest_volume_and_reports_dropped_count():
     assert len(kept) == 15
     assert dropped == 5
     assert [f.observed_count for f in kept] == list(range(20, 5, -1))
+
+
+def test_filter_needing_investigation_targets_seeded_reports(tmp_path, monkeypatch):
+    """Regression test for ADR-0010: a seeded report has no real evidence/
+    cause/timeline. Before this fix, filter_new excluded anything with a
+    report on disk -- including seeded ones -- so a seeded finding could
+    never get real investigation through `houston investigate`."""
+    import houston.dedup as dedup_mod
+    monkeypatch.setattr(dedup_mod, "REPORTS_DIR", tmp_path)
+    from houston.dedup import filter_needing_investigation
+
+    seeded = _finding("et-seeded")
+    (tmp_path / "et-seeded.md").write_text(
+        "---\nstate: seeded\ncost: {input_tokens: 0}\n---\nSeeded, not investigated."
+    )
+    promoted = _finding("et-promoted")
+    (tmp_path / "et-promoted.md").write_text(
+        "---\nstate: promoted\ncost: {input_tokens: 0}\n---\nAlready decided."
+    )
+    brand_new = _finding("et-brand-new")
+
+    result = filter_needing_investigation([seeded, promoted, brand_new])
+
+    fingerprints = {f.fingerprint for f in result}
+    assert fingerprints == {"et-seeded", "et-brand-new"}
+    assert "et-promoted" not in fingerprints

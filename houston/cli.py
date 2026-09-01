@@ -4,7 +4,7 @@ import sys
 
 from houston.agent import investigate as agent_investigate
 from houston.collector import collect
-from houston.dedup import cap, filter_new, report_path
+from houston.dedup import cap, filter_needing_investigation, filter_new, report_path
 from houston.frontmatter import Report, read_report, write_report
 from houston.metrics import can_close_phase, compute, load_all_reports
 
@@ -36,11 +36,16 @@ def cmd_seed(args: argparse.Namespace) -> int:
 def cmd_run(args: argparse.Namespace) -> int:
     """Collects, dedups, and caps — prints what would be investigated.
     Does not invoke the agent yet (E4); that step costs Claude Code usage
-    quota per ADR-0001 and is run deliberately, not on every `run`."""
+    quota per ADR-0001 and is run deliberately, not on every `run`.
+
+    "Needs investigation" includes findings with no report yet AND
+    existing reports still in state: seeded/incomplete -- a seeded report
+    has no real evidence/cause, and treating "has a file" as "done
+    forever" meant it could never get one (ADR-0010)."""
     findings = collect(window_hours=args.window_hours)
-    new_findings = filter_new(findings)
+    new_findings = filter_needing_investigation(findings)
     kept, dropped = cap(new_findings, max_findings=args.max_findings)
-    print(f"{len(findings)} findings total, {len(new_findings)} new, "
+    print(f"{len(findings)} findings total, {len(new_findings)} needing investigation, "
           f"{len(kept)} to investigate, {dropped} dropped by cap")
     for f in kept:
         print(f"  {f.fingerprint}  {f.service}  {f.reason}  count={f.observed_count}")
@@ -76,15 +81,19 @@ def cmd_investigate(args: argparse.Namespace) -> int:
     """Runs the E4 agent for real, one claude -p subprocess per finding.
     Costs money/quota per ADR-0001 -- default cap is deliberately small.
     Never fabricates a result: a timeout or failure writes state:
-    incomplete, not a guessed report."""
+    incomplete, not a guessed report.
+
+    Targets findings needing investigation (no report yet, or an existing
+    report still state: seeded/incomplete) -- not just brand-new signal.
+    A seeded report is overwritten with the real investigation; ADR-0010."""
     findings = collect(window_hours=args.window_hours)
-    new_findings = filter_new(findings)
+    new_findings = filter_needing_investigation(findings)
     kept, dropped = cap(new_findings, max_findings=args.max_findings)
     if not kept:
-        print("nothing new to investigate")
+        print("nothing needs investigation")
         return 0
 
-    print(f"investigating {len(kept)} of {len(new_findings)} new findings "
+    print(f"investigating {len(kept)} of {len(new_findings)} findings needing it "
           f"({dropped} dropped by cap) -- max ${args.max_budget_usd} each, "
           f"{args.timeout_s}s timeout each")
     total_usd = 0.0

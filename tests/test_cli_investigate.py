@@ -25,14 +25,14 @@ def _args(**overrides):
 @patch("houston.cli.write_report")
 @patch("houston.cli.agent_investigate")
 @patch("houston.cli.cap")
-@patch("houston.cli.filter_new")
+@patch("houston.cli.filter_needing_investigation")
 @patch("houston.cli.collect")
 def test_successful_investigation_writes_state_new(
-    mock_collect, mock_filter_new, mock_cap, mock_investigate, mock_write, capsys,
+    mock_collect, mock_filter_needing_inv, mock_cap, mock_investigate, mock_write, capsys,
 ):
     finding = _finding()
     mock_collect.return_value = [finding]
-    mock_filter_new.return_value = [finding]
+    mock_filter_needing_inv.return_value = [finding]
     mock_cap.return_value = ([finding], 0)
     mock_investigate.return_value = InvestigationResult(
         body="## Root cause\nfoo", input_tokens=100, output_tokens=200,
@@ -53,14 +53,14 @@ def test_successful_investigation_writes_state_new(
 @patch("houston.cli.write_report")
 @patch("houston.cli.agent_investigate")
 @patch("houston.cli.cap")
-@patch("houston.cli.filter_new")
+@patch("houston.cli.filter_needing_investigation")
 @patch("houston.cli.collect")
 def test_timed_out_investigation_writes_incomplete_not_fabricated(
-    mock_collect, mock_filter_new, mock_cap, mock_investigate, mock_write, capsys,
+    mock_collect, mock_filter_needing_inv, mock_cap, mock_investigate, mock_write, capsys,
 ):
     finding = _finding()
     mock_collect.return_value = [finding]
-    mock_filter_new.return_value = [finding]
+    mock_filter_needing_inv.return_value = [finding]
     mock_cap.return_value = ([finding], 0)
     mock_investigate.return_value = InvestigationResult(
         body=None, input_tokens=0, output_tokens=0, duration_s=300.0,
@@ -79,16 +79,16 @@ def test_timed_out_investigation_writes_incomplete_not_fabricated(
 @patch("houston.cli.write_report")
 @patch("houston.cli.agent_investigate")
 @patch("houston.cli.cap")
-@patch("houston.cli.filter_new")
+@patch("houston.cli.filter_needing_investigation")
 @patch("houston.cli.collect")
 def test_nothing_new_skips_the_agent_entirely(
-    mock_collect, mock_filter_new, mock_cap, mock_investigate, mock_write, capsys,
+    mock_collect, mock_filter_needing_inv, mock_cap, mock_investigate, mock_write, capsys,
 ):
     mock_collect.return_value = []
-    mock_filter_new.return_value = []
+    mock_filter_needing_inv.return_value = []
     mock_cap.return_value = ([], 0)
 
     cmd_investigate(_args())
 
     mock_investigate.assert_not_called()
-    assert "nothing new to investigate" in capsys.readouterr().out
+    assert "nothing needs investigation" in capsys.readouterr().out
