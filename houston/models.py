@@ -16,3 +16,6 @@ class Finding:
     severity: str
     regressed: bool
     raw: dict[str, Any]
+    datadog_url: str | None = None  # deep link to the real evidence -- for log/event validation
+    window_from_ms: int = 0
+    window_to_ms: int = 0

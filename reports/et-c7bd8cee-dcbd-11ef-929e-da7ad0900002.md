@@ -5,12 +5,12 @@ reason: new
 service: medprev-rest-api
 environment: production
 window:
-  from: 0
-  to: 0
+  from: 1787947458029
+  to: 1788293058029
 observed:
   count: 40
   first_seen: 1737989291000
-  last_seen: 1788267344473
+  last_seen: 1788289536284
 severity: medium
 state: seeded
 cost:
@@ -19,6 +19,9 @@ cost:
   duration_s: 0.0
   usd: 0.0
 issue: null
+datadog_url: https://app.datadoghq.com/error-tracking/issue/c7bd8cee-dcbd-11ef-929e-da7ad0900002
 ---
+
+**Link do Datadog:** https://app.datadoghq.com/error-tracking/issue/c7bd8cee-dcbd-11ef-929e-da7ad0900002
 
 Seeded on first run — pre-existing debt, not investigated. This finding already had activity before Houston started tracking it.

@@ -20,29 +20,37 @@ ALLOWLIST_PATH = ROOT / "houston" / "allowedtools.txt"
 DEFAULT_MAX_BUDGET_USD = "0.50"
 DEFAULT_TIMEOUT_S = 300
 
-PROMPT = """You are investigating one observability finding from Datadog. \
-You have read-only tools to look up more context (logs, spans, related \
-issues) if useful — you do not have to use them if the finding is already \
-clear. Do not guess at evidence you have not actually queried.
+PROMPT = """Você está investigando um achado de observabilidade do Datadog. \
+Você tem ferramentas de leitura para buscar mais contexto (logs, spans, issues \
+relacionadas) se for útil — não precisa usá-las se o achado já estiver claro. \
+Não chute evidência que você não consultou de verdade.
 
-Respond in English, in this exact structure:
+O achado já vem com um link direto para o Datadog (`datadog_url` no JSON) — \
+não construa nem invente outro link; se quiser referenciar onde conferir a \
+evidência, use esse mesmo link ou a consulta (`query`) que você rodou.
 
-## Root cause
-One paragraph, plain language.
+Responda em português, com esta estrutura exata:
 
-## Evidence
-A bullet list, each bullet a claim followed by the exact query or tool call \
-that supports it. Never paste raw log lines or user data — reference where \
-to find it, not the content itself.
+## Causa raiz
+Um parágrafo, em linguagem direta: qual é o serviço, o que está acontecendo e desde quando.
 
-## Recommended action
-One or two sentences.
+## Linha do tempo
+Lista curta com as datas/versões relevantes (primeira ocorrência, última ocorrência, \
+regressão se houver) — extraia dos campos do achado, não invente datas.
 
-## Issue body
-A ready-to-paste GitHub issue body in 5W2H format (What/Why/Where/When/Who/How/How much), \
-under 50 lines.
+## Evidência
+Lista com marcadores, cada um uma afirmação seguida da consulta ou chamada de ferramenta \
+exata que a sustenta. Nunca cole linha de log ou dado de usuário — referencie onde \
+encontrar, não o conteúdo em si.
 
-The finding, as JSON, follows on stdin.
+## Ação recomendada
+Uma ou duas frases.
+
+## Corpo da issue
+Um corpo de issue do GitHub pronto para colar, em formato 5W2H \
+(O quê/Por quê/Onde/Quando/Quem/Como/Quanto), com menos de 50 linhas.
+
+O achado, em JSON, vem a seguir pelo stdin.
 """
 
 
@@ -93,6 +101,7 @@ def investigate(
         "last_seen_ms": finding.last_seen_ms,
         "severity": finding.severity,
         "regressed": finding.regressed,
+        "datadog_url": finding.datadog_url,
     })
 
     try:

@@ -9,6 +9,7 @@ encodes so nothing downstream has to re-learn them:
     (that shorthand only exists on the MCP tool layer, not on raw REST v2).
 """
 import time
+import urllib.parse
 from dataclasses import dataclass
 from typing import Any
 
@@ -31,6 +32,34 @@ class Window:
         return cls(from_ms=from_ms, to_ms=to_ms)
 
 
+def app_url(site: str, path: str) -> str:
+    """The Datadog web app always lives at https://app.<site> -- verified
+    live against this account's real site (datadoghq.com) for all three
+    deep-link shapes this project uses (error-tracking issue, event
+    explorer, monitor status), not assumed from docs alone."""
+    return f"https://app.{site}{path}"
+
+
+def error_tracking_issue_url(site: str, issue_id: str) -> str:
+    return app_url(site, f"/error-tracking/issue/{issue_id}")
+
+
+def monitor_url(site: str, monitor_id: str) -> str:
+    return app_url(site, f"/monitors/{monitor_id}")
+
+
+def event_explorer_url(site: str, query: str, window: Window) -> str:
+    """Without explicit from_ts/to_ts the Event Explorer defaults to the
+    past 15 minutes -- useless for a 96h collection window. live=false
+    pins it to the given range instead of following "now"."""
+    encoded_query = urllib.parse.quote(query)
+    return app_url(
+        site,
+        f"/event/explorer?query={encoded_query}"
+        f"&from_ts={window.from_ms}&to_ts={window.to_ms}&live=false",
+    )
+
+
 class DatadogClient:
     def __init__(self, config: Config):
         self._config = config
@@ -39,6 +68,10 @@ class DatadogClient:
             "DD-APPLICATION-KEY": config.dd_app_key,
             "Content-Type": "application/json",
         }
+
+    @property
+    def site(self) -> str:
+        return self._config.dd_site
 
     def _post(self, path: str, body: dict) -> dict:
         resp = requests.post(

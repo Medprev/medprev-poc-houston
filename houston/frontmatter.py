@@ -37,6 +37,7 @@ class Report:
     body: str
     cost: Cost = field(default_factory=Cost)
     issue: str | None = None
+    datadog_url: str | None = None
 
     @classmethod
     def from_finding(cls, finding: Finding, environment: str = "production",
@@ -47,14 +48,15 @@ class Report:
             reason="regression" if finding.regressed else "new",
             service=finding.service,
             environment=environment,
-            window_from_ms=0,
-            window_to_ms=0,
+            window_from_ms=finding.window_from_ms,
+            window_to_ms=finding.window_to_ms,
             observed_count=finding.observed_count,
             first_seen_ms=finding.first_seen_ms,
             last_seen_ms=finding.last_seen_ms,
             severity=finding.severity,
             state=state,
             body=body,
+            datadog_url=finding.datadog_url,
         )
 
     def to_markdown(self) -> str:
@@ -79,9 +81,14 @@ class Report:
                 "usd": self.cost.usd,
             },
             "issue": self.issue,
+            "datadog_url": self.datadog_url,
         }
         yaml_block = yaml.safe_dump(front_matter, sort_keys=False, allow_unicode=True)
-        return f"---\n{yaml_block}---\n\n{self.body}\n"
+        # Injected here, not asked from the model: this is the authoritative
+        # URL the collector already computed, not something the agent should
+        # construct or guess at investigation time.
+        link_line = f"**Link do Datadog:** {self.datadog_url}\n\n" if self.datadog_url else ""
+        return f"---\n{yaml_block}---\n\n{link_line}{self.body}\n"
 
 
 @dataclass

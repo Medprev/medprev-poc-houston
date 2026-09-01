@@ -10,7 +10,24 @@ def _finding(fp="et-test") -> Finding:
         service="medprev-rest-api", reason="new", first_seen_ms=1700000000000,
         last_seen_ms=1700000001000, observed_count=42, severity="high",
         regressed=True, raw={},
+        datadog_url="https://app.datadoghq.com/error-tracking/issue/et-test",
     )
+
+
+def test_datadog_url_is_injected_in_front_matter_and_visibly_in_body(tmp_path, monkeypatch):
+    import houston.frontmatter as fm
+    monkeypatch.setattr(fm, "REPORTS_DIR", tmp_path)
+    monkeypatch.setattr(fm, "QUARANTINE_DIR", tmp_path / ".quarantine")
+
+    report = Report.from_finding(_finding(), body="Causa raiz: timeout.")
+    result = write_report(report)
+
+    text = result.path.read_text()
+    assert "datadog_url: https://app.datadoghq.com/error-tracking/issue/et-test" in text
+    assert "**Link do Datadog:** https://app.datadoghq.com/error-tracking/issue/et-test" in text
+
+    parsed = read_report(result.path)
+    assert parsed["datadog_url"] == "https://app.datadoghq.com/error-tracking/issue/et-test"
 
 
 def test_clean_report_reaches_reports_dir(tmp_path, monkeypatch):

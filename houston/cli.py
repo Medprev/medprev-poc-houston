@@ -18,8 +18,8 @@ def cmd_seed(args: argparse.Namespace) -> int:
     written, quarantined = 0, 0
     for finding in new_findings:
         report = Report.from_finding(finding, state="seeded", body=(
-            "Seeded on first run — pre-existing debt, not investigated. "
-            "This finding already had activity before Houston started tracking it."
+            "Semeado na primeira rodada — dívida pré-existente, ainda não investigada. "
+            "Este achado já tinha atividade antes do Houston começar a rastreá-lo."
         ))
         result = write_report(report)
         if result.written:
@@ -106,7 +106,7 @@ def cmd_investigate(args: argparse.Namespace) -> int:
         total_usd += result.usd
         if result.state == "incomplete":
             report = Report.from_finding(finding, state="incomplete", body=(
-                f"Investigation did not complete: {result.error}"
+                f"Investigação não foi concluída: {result.error}"
             ))
         else:
             report = Report.from_finding(finding, state="new", body=result.body)

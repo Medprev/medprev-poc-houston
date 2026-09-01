@@ -7,7 +7,13 @@ each finding travels with it, so it can be re-run later as evidence.
 import re
 from collections import Counter
 
-from houston.datadog_client import DatadogClient, Window
+from houston.datadog_client import (
+    DatadogClient,
+    Window,
+    error_tracking_issue_url,
+    event_explorer_url,
+    monitor_url,
+)
 from houston.fingerprint import (
     error_tracking_fingerprint,
     k8s_fingerprint,
@@ -57,6 +63,9 @@ def collect_error_tracking_findings(
                 severity="high" if attrs.get("is_crash") else "medium",
                 regressed=attrs.get("regression") is not None,
                 raw=attrs,
+                datadog_url=error_tracking_issue_url(client.site, issue_id),
+                window_from_ms=window.from_ms,
+                window_to_ms=window.to_ms,
             )
         )
     return findings
@@ -101,6 +110,10 @@ def collect_kubernetes_findings(
     findings = []
     for fp, count in counts.items():
         sample = sample_by_fp[fp]
+        # Scoped to this fingerprint's own namespace + reason, not the whole
+        # collector query -- a link that shows every namespace's warnings
+        # isn't "the link that shows the error" she asked for.
+        scoped_query = f"{query} kube_namespace:{sample['namespace']}"
         findings.append(Finding(
             fingerprint=fp,
             source="kubernetes",
@@ -113,6 +126,9 @@ def collect_kubernetes_findings(
             severity="medium",
             regressed=False,
             raw=sample,
+            datadog_url=event_explorer_url(client.site, scoped_query, window),
+            window_from_ms=window.from_ms,
+            window_to_ms=window.to_ms,
         ))
     return findings
 
@@ -202,6 +218,9 @@ def collect_monitor_findings(
             severity=severity,
             regressed=False,
             raw=sample,
+            datadog_url=monitor_url(client.site, sample["monitor_id"]),
+            window_from_ms=window.from_ms,
+            window_to_ms=window.to_ms,
         ))
     return findings
 

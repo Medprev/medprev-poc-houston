@@ -63,6 +63,10 @@ def test_collector_normalizes_two_step_search_into_findings(mock_post, mock_get)
     assert one.query == "env:production"  # evidence is reconferible: the query travels with the finding
     assert one.service == "medprev-rest-api"
     assert one.first_seen_ms == 1739292088005
+    assert one.datadog_url == (
+        "https://app.datadoghq.com/error-tracking/issue/114e7438-e897-11ef-83c4-da7ad0900002"
+    )
+    assert one.window_from_ms == window.from_ms
 
 
 @patch("houston.datadog_client.requests.get", side_effect=_fake_get)
@@ -116,6 +120,10 @@ def test_kubernetes_findings_fingerprint_by_namespace_not_workload(mock_post):
     assert rest_api_finding.observed_count == 2  # both Unhealthy events collapsed
     assert rest_api_finding.reason == "Unhealthy"
     assert rest_api_finding.fingerprint == "k8s-eks-medprev-online-prd-Unhealthy-medprev-rest-api"
+    assert rest_api_finding.datadog_url.startswith(
+        "https://app.datadoghq.com/event/explorer?query="
+    )
+    assert "kube_namespace%3Amedprev-rest-api" in rest_api_finding.datadog_url
 
     airflow_finding = next(f for f in findings if f.service == "medprev-analytics-etl-airflow")
     assert airflow_finding.observed_count == 1
@@ -146,6 +154,7 @@ def test_monitor_findings_read_nested_alert_attributes_not_top_level(mock_post):
     assert sqs_finding.reason == "ADM - Execuções SQS com erro"  # from monitor.name, not the bracketed title
     assert sqs_finding.service == "tribo-core"
     assert sqs_finding.severity == "high"  # priority:p2 tag
+    assert sqs_finding.datadog_url == "https://app.datadoghq.com/monitors/229652398"
 
     clearsale_finding = next(f for f in findings if f.fingerprint == "mon-311284089")
     assert clearsale_finding.severity == "medium"  # no priority tag -> falls back to status:warning
