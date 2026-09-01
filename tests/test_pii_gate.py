@@ -22,6 +22,19 @@ def test_br_phone_is_caught():
     assert "br_phone" in scan("Called back at (11) 98888-7766 with no answer.")
 
 
+def test_br_phone_without_parens_is_still_caught():
+    assert "br_phone" in scan("Called from 11 98888-7766 yesterday.")
+
+
+def test_bare_digit_run_is_not_a_false_positive_br_phone():
+    # Found live (2026-09-02): a real investigation quoted "2525252525",
+    # a fragment of a cascading percent-encoded URL slug, as evidence.
+    # No separators at all -- must not be scanned as a phone number.
+    assert scan(
+        "the slug is fazenda-rio%2525252525252525252525252520grande"
+    ) == []
+
+
 def test_luhn_valid_pan_is_caught():
     # 4111111111111111 is a well-known Luhn-valid test Visa number
     assert "pan" in scan("Card 4111 1111 1111 1111 declined at checkout.")

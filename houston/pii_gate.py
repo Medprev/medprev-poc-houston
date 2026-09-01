@@ -7,7 +7,17 @@ import re
 _CPF = re.compile(r"\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b")
 _CNPJ = re.compile(r"\b\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}\b")
 _EMAIL = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
-_BR_PHONE = re.compile(r"\b(?:\+?55\s?)?\(?\d{2}\)?\s?9?\d{4}-?\d{4}\b")
+# Requires a real separator between the area code and the number, and a
+# dash before the last four digits -- a bare, unformatted 10-digit run
+# (e.g. a repeating pattern lifted from a malformed URL, or any other
+# technical digit string that happens to be 10 digits long) is not scanned.
+# Found live (2026-09-02): a real investigation quoted "2525252525" -- a
+# fragment of a cascading percent-encoded slug in the evidence section --
+# and the old permissive regex (no separator required at all) matched it
+# as a phone number.
+_BR_PHONE = re.compile(
+    r"(?:\+?55\s?)?(?:\(\d{2}\)|\b\d{2})[\s.-]9?\d{4}-\d{4}\b"
+)
 _CARD_CANDIDATE = re.compile(r"\b(?:\d[ -]?){13,19}\b")
 
 # Real PANs are almost always 15 (Amex) or 16 (Visa/Mastercard/Discover)
