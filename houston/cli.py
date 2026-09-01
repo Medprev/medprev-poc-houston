@@ -2,12 +2,11 @@
 import argparse
 import sys
 
-from houston.collector import collect
-from houston.dedup import cap, filter_new
-from houston.frontmatter import Report, read_report, write_report
-from houston.dedup import report_path
-from houston.metrics import can_close_phase, compute, load_all_reports
 from houston.agent import investigate as agent_investigate
+from houston.collector import collect
+from houston.dedup import cap, filter_new, report_path
+from houston.frontmatter import Report, read_report, write_report
+from houston.metrics import can_close_phase, compute, load_all_reports
 
 
 def cmd_seed(args: argparse.Namespace) -> int:

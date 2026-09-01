@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#MISE description="Print (never run) a ready gh issue create command for one report"
+#USAGE arg "<fingerprint>" help="The report's fingerprint, e.g. et-114e7438..."
+set -e
+python -m houston.cli promote "$usage_fingerprint"

@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+#MISE description="Compute false-positive rate, cost percentiles, and phase-close readiness (free)"
+set -e
+python -m houston.cli metrics

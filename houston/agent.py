@@ -98,7 +98,7 @@ def investigate(
     try:
         proc = subprocess.run(
             cmd, input=stdin_payload, capture_output=True, text=True,
-            env=env, timeout=timeout_s,
+            env=env, timeout=timeout_s, check=False,
         )
     except subprocess.TimeoutExpired:
         return InvestigationResult(

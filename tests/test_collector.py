@@ -3,7 +3,10 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-from houston.collector import collect_error_tracking_findings, collect_kubernetes_findings
+from houston.collector import (
+    collect_error_tracking_findings,
+    collect_kubernetes_findings,
+)
 from houston.config import Config
 from houston.datadog_client import DatadogClient, Window
 

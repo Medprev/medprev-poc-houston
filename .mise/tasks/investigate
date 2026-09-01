@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+#MISE description="Run the real agent on capped new findings -- SPENDS REAL CLAUDE CODE USAGE QUOTA (~$0.24-0.40/finding, measured live)"
+#USAGE flag "--max-findings <n>" help="Cap on findings to investigate this run" default="5"
+#USAGE flag "--max-budget-usd <amount>" help="Per-finding dollar cap passed to claude -p" default="0.50"
+set -e
+python -m houston.cli investigate \
+  --max-findings "${usage_max_findings:-5}" \
+  --max-budget-usd "${usage_max_budget_usd:-0.50}"

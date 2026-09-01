@@ -17,7 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from houston.metrics import compute, load_all_reports  # noqa: E402
+from houston.metrics import compute, load_all_reports
 
 # Named "site/", not "docs/" — this repo's docs/ already holds ADRs and the
 # E0 verification writeup; the generated Pages output needs its own folder.

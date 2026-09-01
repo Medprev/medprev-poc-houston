@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#MISE description="Record pre-existing findings as state: seeded, without investigating (free)"
+#USAGE flag "--window-hours <hours>" help="Collection window in hours" default="96"
+set -e
+python -m houston.cli seed --window-hours "${usage_window_hours:-96}"

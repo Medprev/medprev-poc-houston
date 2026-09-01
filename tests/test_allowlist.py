@@ -1,12 +1,11 @@
 """E4 proof: no write-verb tool ever reaches the committed allowlist."""
-import re
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from generate_allowlist import WRITE_VERBS, generate  # noqa: E402
+from generate_allowlist import WRITE_VERBS, generate
 
 ALLOWLIST_PATH = ROOT / "houston" / "allowedtools.txt"
 

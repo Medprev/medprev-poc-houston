@@ -17,7 +17,7 @@ def _finding(fp="et-cli-test") -> Finding:
 
 
 def _args(**overrides):
-    base = dict(window_hours=96, max_findings=5, max_budget_usd="0.50", timeout_s=300)
+    base = {"window_hours": 96, "max_findings": 5, "max_budget_usd": "0.50", "timeout_s": 300}
     base.update(overrides)
     return argparse.Namespace(**base)
 

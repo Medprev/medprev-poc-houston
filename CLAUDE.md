@@ -10,22 +10,33 @@ Derived from the Vigília architecture document ("Versão mínima" tab). Every n
 
 ## Setup
 
+Task runner: [mise](https://mise.jdx.dev), single toolchain (Python 3.14, flat task names — no
+namespace, see `.claude/skills/medprev-poc-houston-mise/SKILL.md`). Prefer `mise run <task>` over
+activating the venv directly; if you're about to `source .venv/bin/activate && <cmd>`, check `mise
+tasks` first — it's probably already there.
+
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements-dev.txt
+mise trust   # first time only, in a fresh clone
+mise run setup
 cp .env.example .env
 # fill in DD_API_KEY and DD_APP_KEY (read-scoped) and DD_SITE
 ```
+
+Without mise: `python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements-dev.txt`.
 
 ## Commands
 
 ```bash
 # run the whole test suite (no network — everything hits recorded fixtures or mocked subprocess calls)
-python -m pytest tests/ -q
+mise run test
+# equivalent to: python -m pytest tests/ -q  (bare `pytest` fails -- see the comment in .mise/tasks/test)
 
 # run a single test
-python -m pytest tests/test_collector.py::test_kubernetes_findings_fingerprint_by_namespace_not_workload -v
+mise run test kubernetes_findings_fingerprint_by_namespace_not_workload
+# equivalent to: python -m pytest tests/test_collector.py::test_kubernetes_findings_fingerprint_by_namespace_not_workload -v
+
+# lint
+mise run lint   # ruff check .
 
 # regenerate houston/allowedtools.txt from the committed MCP tool snapshot
 python scripts/generate_allowlist.py
@@ -34,7 +45,8 @@ python scripts/generate_allowlist.py
 python scripts/generate_site.py
 ```
 
-The `houston` CLI (`python -m houston.cli <command>`, or just `houston <command>` once the venv is active):
+The `houston` CLI, reached through mise (`mise run run`, `mise run seed`, `mise run investigate`,
+`mise run promote <fingerprint>`, `mise run metrics`) — each wraps `python -m houston.cli <command>`:
 
 | Command | What it does | Costs money/quota? |
 |---|---|---|

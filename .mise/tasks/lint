@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+#MISE description="Lint with ruff"
+set -e
+ruff check .

@@ -1,17 +1,15 @@
 """houston promote: prints a ready command, never executes it."""
-import subprocess
+import argparse
 from unittest.mock import patch
 
 from houston.cli import cmd_promote
-from houston.dedup import REPORTS_DIR
 from houston.frontmatter import Report, write_report
 from houston.models import Finding
-import argparse
 
 
 def test_promote_prints_gh_command_and_never_runs_it(tmp_path, monkeypatch, capsys):
-    import houston.frontmatter as fm
     import houston.dedup as dedup_mod
+    import houston.frontmatter as fm
     monkeypatch.setattr(fm, "REPORTS_DIR", tmp_path)
     monkeypatch.setattr(dedup_mod, "REPORTS_DIR", tmp_path)
     monkeypatch.setattr(fm, "QUARANTINE_DIR", tmp_path / ".quarantine")

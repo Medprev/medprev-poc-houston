@@ -1,7 +1,6 @@
 """E5 — report front-matter contract + the write path every report goes
 through. Nothing reaches reports/ without passing pii_gate.scan first."""
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
