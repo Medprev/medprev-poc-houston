@@ -17,9 +17,9 @@ def collect_error_tracking_findings(
     query: str = "env:production",
     track: str = "trace",
 ) -> list[Finding]:
-    issue_ids = client.search_error_tracking_issue_ids(query, window, track=track)
+    counts_by_id = client.search_error_tracking_issues(query, window, track=track)
     findings: list[Finding] = []
-    for issue_id in issue_ids:
+    for issue_id, total_count in counts_by_id.items():
         issue = client.get_error_tracking_issue(issue_id)
         attrs = issue["attributes"]
         findings.append(
@@ -31,7 +31,8 @@ def collect_error_tracking_findings(
                 reason=attrs.get("error_type", "unknown"),
                 first_seen_ms=attrs.get("first_seen"),
                 last_seen_ms=attrs.get("last_seen"),
-                observed_count=attrs.get("total_count", 1),
+                observed_count=total_count,  # from the search step; the
+                # detail step's schema has no total_count field at all
                 severity="high" if attrs.get("is_crash") else "medium",
                 regressed=attrs.get("regression") is not None,
                 raw=attrs,

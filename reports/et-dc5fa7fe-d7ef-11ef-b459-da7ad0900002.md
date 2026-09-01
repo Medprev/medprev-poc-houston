@@ -8,7 +8,7 @@ window:
   from: 0
   to: 0
 observed:
-  count: 1
+  count: 24
   first_seen: 1737461059000
   last_seen: 1788271965090
 severity: medium

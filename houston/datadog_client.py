@@ -69,10 +69,14 @@ class DatadogClient:
         resp.raise_for_status()
         return bool(resp.json().get("valid"))
 
-    def search_error_tracking_issue_ids(
+    def search_error_tracking_issues(
         self, query: str, window: Window, track: str = "trace"
-    ) -> list[str]:
-        """Step 1 of 2. Returns issue ids only — no first_seen/regression yet."""
+    ) -> dict[str, int]:
+        """Step 1 of 2. Returns {issue_id: total_count}. total_count only
+        exists on this search-result shape (`error_tracking_search_result`)
+        — the issue-detail endpoint's IssueAttributes schema has no such
+        field at all, so reading it there silently returns a default (see
+        the collector's own regression test for the bug this caused)."""
         body = {
             "data": {
                 "type": "search_request",
@@ -85,7 +89,10 @@ class DatadogClient:
             }
         }
         data = self._post("/api/v2/error-tracking/issues/search", body)
-        return [item["id"] for item in data.get("data", [])]
+        return {
+            item["id"]: item.get("attributes", {}).get("total_count", 1)
+            for item in data.get("data", [])
+        }
 
     def get_error_tracking_issue(self, issue_id: str) -> dict[str, Any]:
         """Step 2 of 2. Full attributes, including first_seen and regression."""

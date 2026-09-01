@@ -70,3 +70,21 @@ def test_no_network_access_is_attempted(mock_post, mock_get):
     collect_error_tracking_findings(client, Window.last(96))
     for call in list(mock_post.call_args_list) + list(mock_get.call_args_list):
         pass  # presence of calls only through the mocked functions proves no real socket opened
+
+
+@patch("houston.datadog_client.requests.get", side_effect=_fake_get)
+@patch("houston.datadog_client.requests.post", side_effect=_fake_post)
+def test_observed_count_comes_from_search_step_not_issue_detail(mock_post, mock_get):
+    """Regression test: the issue-detail endpoint's schema has no
+    total_count field at all (confirmed against the official OpenAPI spec
+    in docs/e0-verification.md) -- reading it there silently returns the
+    default of 1 for every finding, which breaks E3's cap() ordering.
+    Found live: a real investigation (E4) surfaced 287,657 real occurrences
+    for a finding this bug had recorded as observed_count=1."""
+    config = Config(dd_api_key="fake", dd_app_key="fake", dd_site="datadoghq.com")
+    client = DatadogClient(config)
+    findings = collect_error_tracking_findings(client, Window.last(96), query="env:production")
+
+    counts = {f.fingerprint: f.observed_count for f in findings}
+    assert counts["et-114e7438-e897-11ef-83c4-da7ad0900002"] == 406
+    assert counts["et-c718a87c-a5a3-11f1-b501-da7ad0900002"] == 29
