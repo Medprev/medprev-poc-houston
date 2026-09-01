@@ -1,0 +1,5 @@
+.env
+reports/.quarantine/
+__pycache__/
+*.pyc
+.venv/
