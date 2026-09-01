@@ -10,6 +10,15 @@ _EMAIL = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
 _BR_PHONE = re.compile(r"\b(?:\+?55\s?)?\(?\d{2}\)?\s?9?\d{4}-?\d{4}\b")
 _CARD_CANDIDATE = re.compile(r"\b(?:\d[ -]?){13,19}\b")
 
+# Real PANs are almost always 15 (Amex) or 16 (Visa/Mastercard/Discover)
+# digits. A bare 13-digit run with no separators is far more likely a Unix
+# epoch-millisecond timestamp than a card number — front-matter fields like
+# observed.first_seen/last_seen are exactly 13 digits and pass Luhn by pure
+# chance roughly 1 in 10 times. Only treat a 13/14/17-19 digit run as a card
+# candidate when it carries card-like formatting (a space or dash separator);
+# an unformatted machine-generated integer of that length is not scanned.
+_COMMON_PAN_LENGTHS = {15, 16}
+
 
 def _luhn_valid(digits: str) -> bool:
     digits = digits[::-1]
@@ -40,8 +49,15 @@ def scan(text: str) -> list[str]:
     if _BR_PHONE.search(text):
         hits.append("br_phone")
     for match in _CARD_CANDIDATE.finditer(text):
-        raw_digits = re.sub(r"[ -]", "", match.group())
-        if 13 <= len(raw_digits) <= 19 and _luhn_valid(raw_digits):
+        candidate = match.group()
+        raw_digits = re.sub(r"[ -]", "", candidate)
+        length = len(raw_digits)
+        if length not in range(13, 20):
+            continue
+        has_separator = " " in candidate or "-" in candidate
+        if length not in _COMMON_PAN_LENGTHS and not has_separator:
+            continue  # unformatted 13/14/17-19-digit run: likely a timestamp or id, not a card
+        if _luhn_valid(raw_digits):
             hits.append("pan")
             break
     return hits

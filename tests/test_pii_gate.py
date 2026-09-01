@@ -36,3 +36,21 @@ def test_multiple_pii_classes_all_caught():
     text = "User carla.cury@medprevonline.com, CPF 123.456.789-09, called (11) 98888-7766."
     hits = scan(text)
     assert set(hits) == {"email", "cpf", "br_phone"}
+
+
+def test_bare_epoch_millisecond_timestamp_is_not_a_false_positive_pan():
+    # Found live against production data (2026-09-01): observed.last_seen
+    # 1788270085136 is a 13-digit epoch-ms value that happens to pass Luhn.
+    # A bare, unformatted 13-digit integer is not scannable as a card number.
+    assert scan("last_seen: 1788270085136") == []
+    assert scan("first_seen: 1785960141573\nlast_seen: 1788270085136") == []
+
+
+def test_16_digit_card_with_separators_still_caught_at_common_length():
+    assert "pan" in scan("Card 4111 1111 1111 1111 declined.")
+    assert "pan" in scan("Card 4111-1111-1111-1111 declined.")
+
+
+def test_bare_16_digit_card_still_caught_even_without_separators():
+    # 16 digits is a common PAN length, so it's scanned regardless of formatting
+    assert "pan" in scan("Card 4111111111111111 declined.")
