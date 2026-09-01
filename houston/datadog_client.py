@@ -1,0 +1,93 @@
+"""Thin REST v2 client for the three read-only queries the collector needs.
+
+Two schema facts confirmed in E0 (docs/e0-verification.md) that this client
+encodes so nothing downstream has to re-learn them:
+  - error-tracking search is two calls, not one: `search` returns only
+    {id, total_count} per result; the full attributes (first_seen,
+    regression, ...) come from a second GET per issue.
+  - `from`/`to` are epoch milliseconds, not relative strings like "now-96h"
+    (that shorthand only exists on the MCP tool layer, not on raw REST v2).
+"""
+import time
+from dataclasses import dataclass
+from typing import Any
+
+import requests
+
+from houston.config import Config
+
+_TIMEOUT_S = 30
+
+
+@dataclass(frozen=True)
+class Window:
+    from_ms: int
+    to_ms: int
+
+    @classmethod
+    def last(cls, hours: int) -> "Window":
+        to_ms = int(time.time() * 1000)
+        from_ms = to_ms - hours * 3600 * 1000
+        return cls(from_ms=from_ms, to_ms=to_ms)
+
+
+class DatadogClient:
+    def __init__(self, config: Config):
+        self._config = config
+        self._headers = {
+            "DD-API-KEY": config.dd_api_key,
+            "DD-APPLICATION-KEY": config.dd_app_key,
+            "Content-Type": "application/json",
+        }
+
+    def _post(self, path: str, body: dict) -> dict:
+        resp = requests.post(
+            f"{self._config.base_url}{path}",
+            headers=self._headers,
+            json=body,
+            timeout=_TIMEOUT_S,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def _get(self, path: str, params: dict | None = None) -> dict:
+        resp = requests.get(
+            f"{self._config.base_url}{path}",
+            headers=self._headers,
+            params=params or {},
+            timeout=_TIMEOUT_S,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def validate(self) -> bool:
+        resp = requests.get(
+            f"{self._config.base_url}/api/v1/validate",
+            headers=self._headers,
+            timeout=_TIMEOUT_S,
+        )
+        resp.raise_for_status()
+        return bool(resp.json().get("valid"))
+
+    def search_error_tracking_issue_ids(
+        self, query: str, window: Window, track: str = "trace"
+    ) -> list[str]:
+        """Step 1 of 2. Returns issue ids only — no first_seen/regression yet."""
+        body = {
+            "data": {
+                "type": "search_request",
+                "attributes": {
+                    "query": query,
+                    "track": track,
+                    "from": window.from_ms,
+                    "to": window.to_ms,
+                },
+            }
+        }
+        data = self._post("/api/v2/error-tracking/issues/search", body)
+        return [item["id"] for item in data.get("data", [])]
+
+    def get_error_tracking_issue(self, issue_id: str) -> dict[str, Any]:
+        """Step 2 of 2. Full attributes, including first_seen and regression."""
+        data = self._get(f"/api/v2/error-tracking/issues/{issue_id}")
+        return data["data"]

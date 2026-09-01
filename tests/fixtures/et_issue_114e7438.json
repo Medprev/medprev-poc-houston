@@ -1,0 +1,26 @@
+{
+  "data": {
+    "id": "114e7438-e897-11ef-83c4-da7ad0900002",
+    "type": "issue",
+    "attributes": {
+      "error_message": "Professional not found",
+      "error_type": "ProfessionalNotFoundException",
+      "file_path": "/usr/src/app/dist/modules/professional/services/online/get-online-professional.service.js",
+      "first_seen": 1739292088005,
+      "first_seen_version": "20250211.7",
+      "function_name": "GetOnlineProfessionalService.findBySlug",
+      "is_crash": false,
+      "languages": ["JAVASCRIPT"],
+      "last_seen": 1788285609984,
+      "last_seen_version": "f2ed63be",
+      "platform": "BACKEND",
+      "regression": {
+        "resolved_at": "2025-11-05T07:18:52.828037Z",
+        "regressed_at": "2025-11-10T20:03:03.256Z",
+        "regressed_at_version": "84f3381f"
+      },
+      "service": "medprev-rest-api",
+      "state": "OPEN"
+    }
+  }
+}

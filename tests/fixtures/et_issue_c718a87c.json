@@ -1,0 +1,22 @@
+{
+  "data": {
+    "id": "c718a87c-a5a3-11f1-b501-da7ad0900002",
+    "type": "issue",
+    "attributes": {
+      "error_message": "UnknownError",
+      "error_type": "NotFound",
+      "file_path": "/usr/src/app/node_modules/@aws-sdk/core/dist-cjs/submodules/protocols/index.js",
+      "first_seen": 1788289420497,
+      "first_seen_version": "4f69c64a",
+      "function_name": "S3RestXmlProtocol.handleError",
+      "is_crash": false,
+      "languages": ["JAVASCRIPT"],
+      "last_seen": 1788335420818,
+      "last_seen_version": "f2ed63be",
+      "platform": "BACKEND",
+      "regression": null,
+      "service": "medprev-rest-api",
+      "state": "OPEN"
+    }
+  }
+}

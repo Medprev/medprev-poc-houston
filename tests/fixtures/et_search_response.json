@@ -1,0 +1,16 @@
+{
+  "data": [
+    {
+      "id": "114e7438-e897-11ef-83c4-da7ad0900002",
+      "type": "error_tracking_search_result",
+      "attributes": {"total_count": 406},
+      "relationships": {"issue": {"data": {"id": "114e7438-e897-11ef-83c4-da7ad0900002", "type": "issue"}}}
+    },
+    {
+      "id": "c718a87c-a5a3-11f1-b501-da7ad0900002",
+      "type": "error_tracking_search_result",
+      "attributes": {"total_count": 29},
+      "relationships": {"issue": {"data": {"id": "c718a87c-a5a3-11f1-b501-da7ad0900002", "type": "issue"}}}
+    }
+  ]
+}
