@@ -44,9 +44,16 @@ unset, because it needs every field on every report.
 ## Consequences
 
 ### Good
-- One transient 503 costs a retry instead of the whole run.
-- The expensive fan-out now follows the same rule as the spend it precedes:
-  0-10 detail calls per run instead of ~102.
+- One transient 503 costs a retry instead of the whole run. This is the
+  mitigation that matters *today*: measured on a live 2h window, the run
+  still makes 67 detail calls, because 147 of the 151 reports on disk are
+  `state: seeded` and a seeded finding legitimately still needs
+  investigation (ADR-0010). Retries are what makes 67 sequential calls
+  survivable.
+- The fan-out now follows the same rule as the spend it precedes, so it
+  shrinks as findings reach decided states: 71 ET findings, 67 enriched
+  with the predicate against 71 without it today, and 0 once the corpus is
+  decided. It no longer grows with the size of the backlog.
 
 ### Bad
 - `houston run`'s printed total still counts unenriched findings, so
