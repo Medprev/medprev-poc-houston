@@ -2,11 +2,11 @@
 from houston.metrics import can_close_phase, compute
 
 
-def _report(state, input_tokens=0, duration_s=0.0, issue=None):
+def _report(state, input_tokens=0, duration_s=0.0, issue=None, usd=0.0):
     return {
         "state": state,
         "cost": {"input_tokens": input_tokens, "output_tokens": 0,
-                  "duration_s": duration_s, "usd": 0.0},
+                  "duration_s": duration_s, "usd": usd},
         "issue": issue,
     }
 
@@ -30,15 +30,56 @@ def test_phase_cannot_close_while_any_report_is_state_new():
     assert pending == 1
 
 
-def test_phase_can_close_when_nothing_is_state_new():
+def test_phase_cannot_close_while_an_investigation_is_incomplete():
+    """Regression test: counting only state: new let the gate print "phase
+    can close" for a run where all five investigations had timed out, which
+    contradicted dedup's own NEEDS_INVESTIGATION_STATES (ADR-0015)."""
+    reports = [_report("incomplete") for _ in range(5)]
+    can_close, pending = can_close_phase(reports)
+    assert can_close is False
+    assert pending == 5
+
+
+def test_phase_cannot_close_while_a_report_is_quarantined():
+    can_close, pending = can_close_phase([_report("promoted"), _report("quarantined")])
+    assert can_close is False
+    assert pending == 1
+
+
+def test_phase_can_close_with_only_decided_and_seeded_reports():
     reports = [_report("promoted"), _report("discarded"), _report("seeded")]
     can_close, pending = can_close_phase(reports)
     assert can_close is True
     assert pending == 0
 
 
-def test_already_had_issue_counts_non_null_issue_field():
+def test_with_issue_link_counts_non_null_issue_field():
     reports = [_report("promoted", issue="Medprev/medprev-product-backlog#123"),
                _report("promoted", issue=None)]
     m = compute(reports)
-    assert m.already_had_issue == 1
+    assert m.with_issue_link == 1
+
+
+def test_spend_is_aggregated_from_front_matter():
+    """Regression test: metrics.py had no reference to `usd` at all, so the
+    one number this PoC exists to establish -- cost per finding -- had to be
+    added up by hand from the report files (ADR-0013)."""
+    reports = [
+        _report("new", usd=0.30), _report("new", usd=0.40),
+        _report("incomplete", usd=0.14), _report("seeded", usd=0.0),
+    ]
+    m = compute(reports)
+
+    assert round(m.usd_total, 4) == 0.84
+    assert round(m.usd_mean, 4) == 0.28  # over the three that actually spent
+    assert m.usd_p50 == 0.30
+    assert {k: round(v, 4) for k, v in m.usd_by_state.items()} == {
+        "new": 0.70, "incomplete": 0.14,
+    }
+
+
+def test_percentiles_tolerate_reports_written_before_a_cost_field_existed():
+    m = compute([{"state": "seeded"}, _report("new", input_tokens=100, usd=0.1)])
+    assert m.total == 2
+    assert m.input_tokens_p50 == 100
+    assert m.usd_total == 0.1
