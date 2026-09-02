@@ -14,7 +14,12 @@ def _load_dotenv(path: Path) -> None:
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, _, value = line.partition("=")
-        os.environ.setdefault(key.strip(), value.strip())
+        value = value.strip()
+        # `DD_SITE="datadoghq.com"` is valid .env syntax; keeping the quotes
+        # produced `https://api."datadoghq.com"` on every request.
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        os.environ.setdefault(key.strip(), value)
 
 
 _load_dotenv(ROOT / ".env")

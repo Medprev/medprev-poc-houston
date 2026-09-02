@@ -19,12 +19,22 @@ def test_monitor_fingerprint_with_group():
     assert monitor_fingerprint(167097893, "host:web-1") == "mon-167097893-host:web-1"
 
 
-def test_k8s_fingerprint_strips_replicaset_and_pod_hash_suffix():
-    a = k8s_fingerprint("prod-eks", "BackOff", "medprev-rest-api-7f9b8d6c9d-x2k7p")
-    b = k8s_fingerprint("prod-eks", "BackOff", "medprev-rest-api-58a1c2f4a1-m9q3z")
-    assert a == b == "k8s-prod-eks-BackOff-medprev-rest-api"
+def test_k8s_fingerprint_is_cluster_reason_namespace():
+    assert k8s_fingerprint("prod-eks", "BackOff", "medprev-rest-api") == (
+        "k8s-prod-eks-BackOff-medprev-rest-api"
+    )
+
+
+def test_namespaces_ending_in_a_number_stay_distinct():
+    """Regression test: the old pod-hash strip ran `-[0-9]+$` over what is
+    now a namespace, so `medprev-web-app-2` collapsed onto
+    `medprev-web-app` and dedup-by-file-existence then suppressed the
+    second namespace permanently (ADR-0019)."""
+    assert k8s_fingerprint("prod-eks", "BackOff", "medprev-web-app-2") != (
+        k8s_fingerprint("prod-eks", "BackOff", "medprev-web-app")
+    )
 
 
 def test_k8s_fingerprint_is_a_pure_function():
-    args = ("prod-eks", "OOMKilled", "worker-6b7d9f8c5-abcde")
+    args = ("prod-eks", "OOMKilled", "medprev-rest-api")
     assert k8s_fingerprint(*args) == k8s_fingerprint(*args)

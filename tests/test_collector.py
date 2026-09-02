@@ -7,6 +7,9 @@ from houston.collector import (
     collect_error_tracking_findings,
     collect_kubernetes_findings,
     collect_monitor_findings,
+    kubernetes_evidence_query,
+    monitor_evidence_query,
+    monitor_severity,
 )
 from houston.config import Config
 from houston.datadog_client import DatadogClient, Window
@@ -53,20 +56,69 @@ def test_collector_normalizes_two_step_search_into_findings(mock_post, mock_get)
 
     assert len(findings) == 2
     assert mock_post.call_count == 1  # one search call for the whole batch
-    assert mock_get.call_count == 2  # one detail call per new issue, not per event
-
-    regressed = {f.fingerprint: f.regressed for f in findings}
-    assert regressed["et-114e7438-e897-11ef-83c4-da7ad0900002"] is True
-    assert regressed["et-c718a87c-a5a3-11f1-b501-da7ad0900002"] is False
+    assert mock_get.call_count == 2  # one detail call per issue, not per event
 
     one = next(f for f in findings if f.fingerprint.startswith("et-114e7438"))
-    assert one.query == "env:production"  # evidence is reconferible: the query travels with the finding
+    assert one.query == "env:production"  # the query the volume came from
     assert one.service == "medprev-rest-api"
+    assert one.reason == "ProfessionalNotFoundException"  # the diagnostic label
     assert one.first_seen_ms == 1739292088005
     assert one.datadog_url == (
         "https://app.datadoghq.com/error-tracking/issue/114e7438-e897-11ef-83c4-da7ad0900002"
     )
     assert one.window_from_ms == window.from_ms
+
+
+@patch("houston.datadog_client.requests.get", side_effect=_fake_get)
+@patch("houston.datadog_client.requests.post", side_effect=_fake_post)
+def test_regression_is_scoped_to_the_window_not_to_all_history(mock_post, mock_get):
+    """Regression test: `regression` is a permanent historical record. The
+    fixture's regressed_at is 2025-11-10, so against a window that does not
+    contain it the finding is not a regression -- before this, 33 of 151
+    reports carried the label and `houston promote` put the word
+    "regression" in the issue title of long-stable errors (ADR-0019)."""
+    config = Config(dd_api_key="fake", dd_app_key="fake", dd_site="datadoghq.com")
+    client = DatadogClient(config)
+
+    # 2026-08-29 .. 2026-09-02, well after the fixture's regressed_at
+    recent = Window(from_ms=1787940071675, to_ms=1788285671675)
+    regressed = {
+        f.fingerprint: f.regressed
+        for f in collect_error_tracking_findings(client, recent)
+    }
+    assert regressed["et-114e7438-e897-11ef-83c4-da7ad0900002"] is False
+    assert regressed["et-c718a87c-a5a3-11f1-b501-da7ad0900002"] is False
+
+    # a window that does contain 2025-11-10T20:03:03.256Z
+    around = Window(from_ms=1762000000000, to_ms=1763000000000)
+    regressed_then = {
+        f.fingerprint: f.regressed
+        for f in collect_error_tracking_findings(client, around)
+    }
+    assert regressed_then["et-114e7438-e897-11ef-83c4-da7ad0900002"] is True
+
+
+@patch("houston.datadog_client.requests.get", side_effect=_fake_get)
+@patch("houston.datadog_client.requests.post", side_effect=_fake_post)
+def test_detail_call_is_skipped_for_findings_that_cannot_be_investigated(
+    mock_post, mock_get,
+):
+    """The documented contract (docs/e0-verification.md) is one detail call
+    per finding that still needs investigation. Fanning out over every
+    search hit meant ~100 sequential calls per run, each one of them a
+    chance to abort the run (ADR-0020)."""
+    config = Config(dd_api_key="fake", dd_app_key="fake", dd_site="datadoghq.com")
+    client = DatadogClient(config)
+
+    findings = collect_error_tracking_findings(
+        client, Window.last(96), should_enrich=lambda fingerprint: False,
+    )
+
+    assert mock_get.call_count == 0
+    assert len(findings) == 2  # still counted, still deduplicable
+    counts = {f.fingerprint: f.observed_count for f in findings}
+    assert counts["et-114e7438-e897-11ef-83c4-da7ad0900002"] == 406
+    assert all(f.severity == "unknown" and f.service is None for f in findings)
 
 
 @patch("houston.datadog_client.requests.get", side_effect=_fake_get)
@@ -130,6 +182,39 @@ def test_kubernetes_findings_fingerprint_by_namespace_not_workload(mock_post):
     assert airflow_finding.reason == "FailedGetResourceMetric"
 
 
+@patch("houston.datadog_client.requests.post", side_effect=_fake_post_k8s_events)
+def test_kubernetes_link_and_query_are_scoped_to_the_reason(mock_post):
+    """Regression test: the link was scoped by namespace only, so six
+    findings with different reasons in one namespace shared a byte-identical
+    datadog_url, and `query` kept the unscoped collector query. Verified
+    live that the free-text reason term filters (ADR-0014)."""
+    config = Config(dd_api_key="fake", dd_app_key="fake", dd_site="datadoghq.com")
+    client = DatadogClient(config)
+    findings = collect_kubernetes_findings(client, Window.last(96))
+
+    urls = {f.fingerprint: f.datadog_url for f in findings}
+    assert len(set(urls.values())) == len(findings)  # no two findings share a link
+    for finding in findings:
+        assert finding.reason in finding.query
+        assert f"kube_namespace:{finding.service}" in finding.query
+
+
+@patch("houston.datadog_client.requests.post", side_effect=_fake_post_k8s_events)
+def test_kubernetes_findings_carry_the_windows_first_and_last_sighting(mock_post):
+    """This source has no lifetime history, and leaving both timestamps
+    null made the report contract's mandated `## Linha do tempo` section
+    unfillable for every kubernetes and monitor finding (ADR-0014)."""
+    config = Config(dd_api_key="fake", dd_app_key="fake", dd_site="datadoghq.com")
+    client = DatadogClient(config)
+    findings = collect_kubernetes_findings(client, Window.last(96))
+
+    rest_api = next(f for f in findings if f.service == "medprev-rest-api")
+    # 2026-09-01T17:52:03Z and 2026-09-01T18:20:53Z
+    assert rest_api.first_seen_ms == 1788285123000
+    assert rest_api.last_seen_ms == 1788286853000
+    assert rest_api.first_seen_ms < rest_api.last_seen_ms
+
+
 def _fake_post_monitor_events(url, headers=None, json=None, timeout=None):
     assert "/events/search" in url
     return _FakeResponse(_load("monitor_events_response.json"))
@@ -146,15 +231,48 @@ def test_monitor_findings_read_nested_alert_attributes_not_top_level(mock_post):
     client = DatadogClient(config)
     findings = collect_monitor_findings(client, Window.last(96))
 
-    # 3 raw events, 2 share monitor id 229652398 -> 2 findings, not 3
-    assert len(findings) == 2
-
     sqs_finding = next(f for f in findings if f.fingerprint == "mon-229652398")
     assert sqs_finding.observed_count == 2
     assert sqs_finding.reason == "ADM - Execuções SQS com erro"  # from monitor.name, not the bracketed title
     assert sqs_finding.service == "tribo-core"
     assert sqs_finding.severity == "high"  # priority:p2 tag
     assert sqs_finding.datadog_url == "https://app.datadoghq.com/monitors/229652398"
+    assert sqs_finding.query.endswith("@monitor.id:229652398")
+    # 2026-08-28T19:38:58Z and 2026-08-29T01:09:58Z
+    assert sqs_finding.first_seen_ms == 1787945938000
+    assert sqs_finding.last_seen_ms == 1787965798000
 
-    clearsale_finding = next(f for f in findings if f.fingerprint == "mon-311284089")
-    assert clearsale_finding.severity == "medium"  # no priority tag -> falls back to status:warning
+
+@patch("houston.datadog_client.requests.post", side_effect=_fake_post_monitor_events)
+def test_recovery_events_do_not_become_findings(mock_post):
+    """Regression test: a recovery is a monitor going back to normal, not an
+    incident. The captured fixture proves the status filter is not enough --
+    its `[Recovered]` event carries `status: "warning"`, and stripping the
+    prefix for the name hid that it had arrived at all."""
+    config = Config(dd_api_key="fake", dd_app_key="fake", dd_site="datadoghq.com")
+    client = DatadogClient(config)
+    findings = collect_monitor_findings(client, Window.last(96))
+
+    # 3 raw events: 2 triggered on one monitor, 1 recovery on another
+    assert [f.fingerprint for f in findings] == ["mon-229652398"]
+
+
+def test_monitor_severity_prefers_the_priority_tag_over_status():
+    assert monitor_severity("p1", "warning") == "high"
+    assert monitor_severity("p2", None) == "high"
+    assert monitor_severity("p3", "error") == "medium"
+    assert monitor_severity("p5", "error") == "low"
+
+
+def test_monitor_severity_falls_back_to_status_without_a_priority_tag():
+    assert monitor_severity(None, "error") == "high"
+    assert monitor_severity(None, "warning") == "medium"
+
+
+def test_evidence_queries_scope_to_one_finding():
+    assert kubernetes_evidence_query(
+        "source:kubernetes env:production status:warn", "medprev-rest-api", "Unhealthy",
+    ) == "source:kubernetes env:production status:warn kube_namespace:medprev-rest-api Unhealthy"
+    # the parsed-reason fallback is our own placeholder, not a Datadog term
+    assert kubernetes_evidence_query("q", "ns", "UnknownReason") == "q kube_namespace:ns"
+    assert monitor_evidence_query("source:alert", "42") == "source:alert @monitor.id:42"
