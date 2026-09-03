@@ -47,6 +47,8 @@ class Report:
     cost: Cost = field(default_factory=Cost)
     issue: str | None = None
     datadog_url: str | None = None
+    fix_pr: str | None = None
+    fix_state: str | None = None  # "attempted" | "pr_open" | "merged" | "rejected" | "incomplete"
 
     @classmethod
     def from_finding(cls, finding: Finding, environment: str = "production",
@@ -95,6 +97,8 @@ class Report:
             },
             "issue": self.issue,
             "datadog_url": self.datadog_url,
+            "fix_pr": self.fix_pr,
+            "fix_state": self.fix_state,
         }
         yaml_block = yaml.safe_dump(front_matter, sort_keys=False, allow_unicode=True)
         # Injected here, not asked from the model: this is the authoritative

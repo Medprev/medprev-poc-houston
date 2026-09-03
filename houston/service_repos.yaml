@@ -1,0 +1,44 @@
+medprev-rest-api:
+  repo: Medprev/medprev-rest-api
+  path: ~/repos/m/medprev-rest-api
+
+medprev-rest-api-adm:
+  repo: Medprev/medprev-rest-api
+  path: ~/repos/m/medprev-rest-api
+
+medprev-rest-api-pp:
+  repo: Medprev/medprev-rest-api
+  path: ~/repos/m/medprev-rest-api
+
+medprev-web-app:
+  repo: Medprev/medprev-web-app
+  path: ~/repos/m/medprev-web-app
+
+medprev-web-app-backend-graphql:
+  repo: Medprev/medprev-web-app
+  path: ~/repos/m/medprev-web-app
+
+medprev-cms:
+  repo: Medprev/medprev-cms
+  path: ~/repos/m/medprev-cms
+
+medprev-institucional-cms:
+  repo: Medprev/medprev-institucional-cms
+  path: ~/repos/m/medprev-institucional-cms
+
+medprev-face-liveness-app:
+  repo: Medprev/medprev-face-liveness-app
+  path: ~/repos/m/medprev-face-liveness-app
+
+medprev-feature-flag:
+  repo: Medprev/medprev-feature-flag
+  path: ~/repos/m/medprev-feature-flag
+
+medprev-analytics-etl-airflow: null
+medprev-metabase: null
+medprev-n8n: null
+kube-system: null
+argocd: null
+nginx-gateway-fabric: null
+unknown-namespace: null
+datadog: null

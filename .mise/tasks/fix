@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#MISE description="Create a PR fixing a promoted finding (costs money)"
+set -e
+cd "$MISE_PROJECT_ROOT"
+python -m houston.cli fix "$@"
