@@ -23,7 +23,7 @@ from houston.metrics import compute, load_all_reports
 # E0 verification writeup; the generated Pages output needs its own folder.
 OUTPUT_DIR = ROOT / "site"
 
-_STATE_ORDER = ["new", "incomplete", "promoted", "discarded", "seeded"]
+_STATE_ORDER = ["new", "incomplete", "quarantined", "promoted", "discarded", "seeded"]
 
 
 def _fmt_ms(ms: int | None) -> str:
@@ -44,6 +44,7 @@ def _row(r: dict) -> str:
         f"<td>{service}</td>"
         f'<td>{html.escape(r["source"])}</td>'
         f'<td>{html.escape(r["reason"])}</td>'
+        f'<td>{html.escape(r.get("novelty") or "—")}</td>'
         f'<td><span class="sev sev-{html.escape(r["severity"])}">{html.escape(r["severity"])}</span></td>'
         f'<td><span class="state state-{html.escape(r["state"])}">{html.escape(r["state"])}</span></td>'
         f'<td>{_fmt_ms(r["observed"]["first_seen"])}</td>'
@@ -93,6 +94,7 @@ td{{padding:9px 10px 9px 0;border-bottom:1px solid var(--rule);vertical-align:to
 .sev-high,.sev-critical{{color:var(--crit)}} .sev-medium{{color:var(--warn)}} .sev-low{{color:var(--ok)}}
 .state-new{{color:var(--accent)}} .state-promoted{{color:var(--ok)}} .state-discarded{{color:var(--muted)}}
 .state-seeded{{color:var(--muted)}} .state-incomplete{{color:var(--crit)}}
+.state-quarantined{{color:var(--warn)}}
 footer{{margin-top:24px;color:var(--muted);font-size:12px}}
 </style></head>
 <body><div class="wrap">
@@ -101,7 +103,7 @@ footer{{margin-top:24px;color:var(--muted);font-size:12px}}
 Structured fields only — no evidence, root cause, or error text is shown here (see the private repo for full reports).</p>
 <div class="stats">{state_counts}</div>
 <table>
-<thead><tr><th>Fingerprint</th><th>Service</th><th>Source</th><th>Reason</th><th>Severity</th><th>State</th><th>First seen</th><th>Issue</th></tr></thead>
+<thead><tr><th>Fingerprint</th><th>Service</th><th>Source</th><th>Reason</th><th>Novelty</th><th>Severity</th><th>State</th><th>First seen</th><th>Issue</th></tr></thead>
 <tbody>
 {rows}
 </tbody>

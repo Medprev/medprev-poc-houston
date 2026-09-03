@@ -4,16 +4,60 @@ import sys
 
 from houston.agent import investigate as agent_investigate
 from houston.collector import collect
-from houston.dedup import cap, filter_needing_investigation, filter_new, report_path
+from houston.dedup import (
+    already_reported,
+    cap,
+    filter_needing_investigation,
+    filter_new,
+    needs_investigation,
+    report_path,
+)
 from houston.frontmatter import Report, read_report, write_report
-from houston.metrics import can_close_phase, compute, load_all_reports
+from houston.metrics import BLOCKING_STATES, can_close_phase, compute, load_all_reports
+
+# Both headings appear in the corpus: the prompt asks for the Portuguese one,
+# the first reports on disk used the English one.
+_ISSUE_BODY_HEADINGS = ("## Corpo da issue", "## Issue body")
+
+
+def _unfence(text: str) -> str:
+    """Strips a wrapping ``` fence. The model tends to fence the issue-body
+    section, and `gh issue create --body` would then file an issue whose
+    whole 5W2H content renders as one literal code block."""
+    if not text.startswith("```"):
+        return text
+    lines = text.splitlines()
+    closing = next(
+        (i for i in range(len(lines) - 1, 0, -1) if lines[i].strip().startswith("```")),
+        None,
+    )
+    if closing is None:
+        return text
+    return "\n".join(lines[1:closing]).strip()
+
+
+def extract_issue_body(body: str) -> str:
+    """Pulls the ready-to-paste issue body out of a report body. Falls back
+    to the whole report when neither heading is present, so a malformed
+    report still prints something a human can edit."""
+    section = body
+    for heading in _ISSUE_BODY_HEADINGS:
+        if heading in body:
+            section = body.split(heading, 1)[1]
+            break
+    return _unfence(section.strip())
 
 
 def cmd_seed(args: argparse.Namespace) -> int:
     """Records pre-existing debt as state: seeded, investigating nothing.
     This is the one-time bootstrap so the backlog that existed before this
     tool did doesn't get treated as new signal on day one."""
-    findings = collect(window_hours=args.window_hours)
+    # Seeding writes a report for anything that has none, so that is
+    # exactly the set worth the per-finding detail call.
+    findings = collect(
+        window_hours=args.window_hours,
+        should_enrich=lambda fingerprint: not already_reported(fingerprint),
+    )
     new_findings = filter_new(findings)
     written, quarantined = 0, 0
     for finding in new_findings:
@@ -42,7 +86,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     existing reports still in state: seeded/incomplete -- a seeded report
     has no real evidence/cause, and treating "has a file" as "done
     forever" meant it could never get one (ADR-0010)."""
-    findings = collect(window_hours=args.window_hours)
+    findings = collect(
+        window_hours=args.window_hours, should_enrich=needs_investigation,
+    )
     new_findings = filter_needing_investigation(findings)
     kept, dropped = cap(new_findings, max_findings=args.max_findings)
     print(f"{len(findings)} findings total, {len(new_findings)} needing investigation, "
@@ -64,15 +110,26 @@ def cmd_metrics(args: argparse.Namespace) -> int:
         print(f"  {state}: {count}")
     fp = f"{m.false_positive_rate:.1%}" if m.false_positive_rate is not None else "n/a (no promoted+discarded yet)"
     print(f"false-positive rate: {fp}")
-    print(f"already had an open issue: {m.already_had_issue}")
+    print(f"reports carrying an issue link: {m.with_issue_link}")
+    print(f"spend total: ${m.usd_total:.4f}   mean ${m.usd_mean:.4f}/paid finding   "
+          f"p50=${m.usd_p50:.4f}  p95=${m.usd_p95:.4f}")
+    if m.usd_by_state:
+        by_state = "  ".join(
+            f"{state}=${spent:.4f}" for state, spent in sorted(m.usd_by_state.items())
+        )
+        print(f"spend by state: {by_state}")
     print(f"input tokens  p50={m.input_tokens_p50:.0f}  p95={m.input_tokens_p95:.0f}")
     print(f"duration (s)  p50={m.duration_s_p50:.1f}  p95={m.duration_s_p95:.1f}")
 
     can_close, pending = can_close_phase(reports)
     if not can_close:
-        print(f"\nphase CANNOT close: {pending} report(s) still state: new")
+        breakdown = ", ".join(
+            f"{m.by_state[state]} {state}"
+            for state in BLOCKING_STATES if m.by_state.get(state)
+        )
+        print(f"\nphase CANNOT close: {pending} report(s) still owe work ({breakdown})")
         return 1
-    print("\nphase can close: no report left in state: new")
+    print(f"\nphase can close: no report left in {'/'.join(BLOCKING_STATES)}")
     return 0
 
 
@@ -86,7 +143,9 @@ def cmd_investigate(args: argparse.Namespace) -> int:
     Targets findings needing investigation (no report yet, or an existing
     report still state: seeded/incomplete) -- not just brand-new signal.
     A seeded report is overwritten with the real investigation; ADR-0010."""
-    findings = collect(window_hours=args.window_hours)
+    findings = collect(
+        window_hours=args.window_hours, should_enrich=needs_investigation,
+    )
     new_findings = filter_needing_investigation(findings)
     kept, dropped = cap(new_findings, max_findings=args.max_findings)
     if not kept:
@@ -112,15 +171,21 @@ def cmd_investigate(args: argparse.Namespace) -> int:
             report = Report.from_finding(finding, state="new", body=result.body)
         report.cost.input_tokens = result.input_tokens
         report.cost.output_tokens = result.output_tokens
+        report.cost.cache_read_input_tokens = result.cache_read_input_tokens
+        report.cost.cache_creation_input_tokens = result.cache_creation_input_tokens
         report.cost.duration_s = result.duration_s
         report.cost.usd = result.usd
         write_result = write_report(report)
         if write_result.written:
-            print(f"${result.usd:.2f}, {result.state}")
+            print(f"${result.usd:.4f}, {result.state}")
+        elif write_result.record_path:
+            print(f"QUARANTINED ({write_result.pii_hits}), ${result.usd:.4f} "
+                  f"recorded in {write_result.record_path.name}")
         else:
-            print(f"QUARANTINED ({write_result.pii_hits})")
+            print(f"QUARANTINED ({write_result.pii_hits}), ${result.usd:.4f} "
+                  f"NOT recorded: the stub itself tripped the gate", file=sys.stderr)
 
-    print(f"total spend this run: ${total_usd:.2f}")
+    print(f"total spend this run: ${total_usd:.4f}")
     return 0
 
 
@@ -137,12 +202,16 @@ def cmd_promote(args: argparse.Namespace) -> int:
     text = path.read_text()
     _, _, body = text.split("---", 2)
 
-    # pull the "## Issue body" section out of the investigation body, if present
-    issue_body = body
-    if "## Issue body" in body:
-        issue_body = body.split("## Issue body", 1)[1].strip()
+    issue_body = extract_issue_body(body)
 
-    title = f"[{report['source']}] {report['reason']} in {report.get('service') or 'unknown service'}"
+    # `reason` is the diagnostic label (error_type / monitor name / k8s
+    # Reason); novelty is a separate field, so the title names the error
+    # instead of naming how new it is.
+    novelty = "regression: " if report.get("novelty") == "regression" else ""
+    title = (
+        f"[{report['source']}] {novelty}{report['reason']} "
+        f"in {report.get('service') or 'unknown service'}"
+    )
     escaped_body = issue_body.replace("'", "'\\''")
     command_lines = [
         "gh issue create --repo Medprev/medprev-product-backlog \\",

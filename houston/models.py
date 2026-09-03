@@ -7,14 +7,18 @@ from typing import Any
 class Finding:
     fingerprint: str
     source: str  # "error_tracking" | "monitor" | "kubernetes"
-    query: str  # the exact query that produced this finding — reconferible evidence
+    # The narrowest query that reproduces this finding — kubernetes scopes
+    # by namespace + reason, monitor by @monitor.id. For error_tracking the
+    # per-finding locator is `datadog_url` (the issue page), and this is the
+    # window-scoped query the volume came from.
+    query: str
     service: str | None
-    reason: str
+    reason: str  # the diagnostic label: error_type / monitor name / k8s Reason
     first_seen_ms: int | None
     last_seen_ms: int | None
-    observed_count: int
+    observed_count: int  # occurrences inside [window_from_ms, window_to_ms], not cumulative
     severity: str
-    regressed: bool
+    regressed: bool  # regressed *inside this window*, not at any point in history
     raw: dict[str, Any]
     datadog_url: str | None = None  # deep link to the real evidence -- for log/event validation
     window_from_ms: int = 0
