@@ -100,11 +100,20 @@ def _branch_name(fingerprint: str, attempt: int) -> str:
 
 
 def _count_existing_attempts(repo_path: Path, fingerprint: str) -> int:
-    result = subprocess.run(
-        ["git", "branch", "-r", "--list", f"origin/houston/fix/{fingerprint}*"],
-        capture_output=True, text=True, cwd=repo_path, check=False,
-    )
-    return len([l for l in result.stdout.splitlines() if l.strip()])
+    total = 0
+    for flag in ["-r", "--list"]:
+        # Count both remote and local branches to handle failed attempts
+        # that created a local branch but never pushed.
+        if flag == "-r":
+            pattern = f"origin/houston/fix/{fingerprint}*"
+        else:
+            pattern = f"houston/fix/{fingerprint}*"
+        result = subprocess.run(
+            ["git", "branch", flag, pattern],
+            capture_output=True, text=True, cwd=repo_path, check=False,
+        )
+        total += len([l for l in result.stdout.splitlines() if l.strip()])
+    return total
 
 
 def _prepare_worktree(
@@ -131,8 +140,11 @@ def _prepare_worktree(
 
 
 def _cleanup_worktree(repo_path: Path, worktree_dir: Path) -> None:
+    # --force twice: first removes a dirty worktree, second removes one
+    # with a checked-out branch — needed when a timeout kills the agent
+    # mid-work.
     subprocess.run(
-        ["git", "worktree", "remove", "--force", str(worktree_dir)],
+        ["git", "worktree", "remove", "--force", "--force", str(worktree_dir)],
         cwd=repo_path, check=False, capture_output=True,
     )
 
