@@ -229,12 +229,6 @@ def fix(
 
     payload = _payload_or_none(proc.stdout)
 
-    if proc.returncode != 0:
-        return _result(
-            payload, "incomplete", branch=branch,
-            error=_error_text(payload, proc.stderr),
-        )
-
     if payload is None:
         return _result(
             None, "incomplete", branch=branch,
@@ -244,11 +238,17 @@ def fix(
     result_text = payload.get("result", "")
     pr_url = _extract_pr_url(result_text)
 
-    if payload.get("is_error") or not result_text:
+    # The agent may have created the PR and then hit the budget limit —
+    # exit code 1 but a real PR exists.  A PR URL in the output is the
+    # strongest signal; non-zero exit without one is incomplete.
+    if pr_url:
+        return _result(payload, "pr_open", pr_url=pr_url, branch=branch)
+
+    if proc.returncode != 0 or payload.get("is_error") or not result_text:
         return _result(
             payload, "incomplete", branch=branch,
             error=_error_text(payload, proc.stderr),
         )
 
-    state = "pr_open" if pr_url else "incomplete"
-    return _result(payload, state, pr_url=pr_url, branch=branch)
+    return _result(payload, "incomplete", branch=branch,
+                   error="agent finished but no PR URL found in output")

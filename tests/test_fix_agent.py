@@ -175,12 +175,36 @@ def test_timeout_produces_incomplete(mock_run, mock_count, mock_prep, mock_clean
 @patch("houston.fix_agent._prepare_worktree")
 @patch("houston.fix_agent._count_existing_attempts", return_value=0)
 @patch("houston.fix_agent.subprocess.run")
-def test_nonzero_exit_produces_incomplete(mock_run, mock_count, mock_prep, mock_clean):
+def test_nonzero_exit_without_pr_produces_incomplete(mock_run, mock_count, mock_prep, mock_clean):
     mock_prep.return_value = (Path("/tmp/wt"), "houston/fix/et-test")
     mock_run.return_value = _fake_completed("", returncode=1, stderr="CLI error")
     result = fix("et-test", "report text", "https://github.com/org/repo/issues/1", REPO_INFO)
     assert result.state == "incomplete"
     assert result.pr_url is None
+
+
+@patch("houston.fix_agent._cleanup_worktree")
+@patch("houston.fix_agent._prepare_worktree")
+@patch("houston.fix_agent._count_existing_attempts", return_value=0)
+@patch("houston.fix_agent.subprocess.run")
+def test_nonzero_exit_with_pr_url_is_pr_open(mock_run, mock_count, mock_prep, mock_clean):
+    """The agent may create the PR then hit the budget limit — exit 1 but
+    a real PR exists. The PR URL is the strongest signal."""
+    mock_prep.return_value = (Path("/tmp/wt"), "houston/fix/et-test")
+    mock_run.return_value = _fake_completed(
+        json.dumps({
+            "is_error": True,
+            "subtype": "error_max_budget_usd",
+            "result": "Created PR https://github.com/Medprev/medprev-web-app/pull/99 but ran out of budget.",
+            "usage": {"input_tokens": 50000, "output_tokens": 5000},
+            "duration_ms": 300000, "total_cost_usd": 3.0,
+        }),
+        returncode=1, stderr="",
+    )
+    result = fix("et-test", "report text", "https://github.com/org/repo/issues/1", REPO_INFO)
+    assert result.state == "pr_open"
+    assert result.pr_url == "https://github.com/Medprev/medprev-web-app/pull/99"
+    assert result.usd == 3.0
 
 
 @patch("houston.fix_agent._cleanup_worktree")
