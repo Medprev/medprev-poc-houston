@@ -12,6 +12,8 @@ from houston.dedup import (
     needs_investigation,
     report_path,
 )
+from houston.fix_agent import fix as agent_fix
+from houston.fix_agent import resolve_repo
 from houston.frontmatter import Report, read_report, write_report
 from houston.metrics import BLOCKING_STATES, can_close_phase, compute, load_all_reports
 
@@ -224,6 +226,75 @@ def cmd_promote(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_fix(args: argparse.Namespace) -> int:
+    """Creates a PR that fixes a promoted finding. Costs money — runs a
+    claude -p subprocess with code tools against the target service's repo."""
+    path = report_path(args.fingerprint)
+    if not path.exists():
+        print(f"no report at {path}", file=sys.stderr)
+        return 1
+
+    report = read_report(path)
+    if report.get("state") != "promoted":
+        print(f"report state is '{report.get('state')}', not 'promoted'", file=sys.stderr)
+        return 1
+
+    issue_url = args.issue or report.get("issue")
+    if not issue_url:
+        print("no issue URL: pass --issue <url> or set the issue: field in the report",
+              file=sys.stderr)
+        return 1
+
+    text = path.read_text()
+    service = report.get("service")
+    repo_info = resolve_repo(service, text)
+    if repo_info is None:
+        print(f"service '{service}' does not map to a fixable repo", file=sys.stderr)
+        return 1
+
+    print(f"fixing {args.fingerprint}")
+    print(f"  repo: {repo_info['repo']}  path: {repo_info['path']}")
+    print(f"  issue: {issue_url}")
+    print(f"  budget: ${args.max_budget_usd}  timeout: {args.timeout_s}s")
+
+    result = agent_fix(
+        fingerprint=args.fingerprint,
+        report_markdown=text,
+        issue_url=issue_url,
+        repo_info=repo_info,
+        max_budget_usd=args.max_budget_usd,
+        timeout_s=args.timeout_s,
+    )
+
+    print(f"  state: {result.state}  cost: ${result.usd:.4f}")
+    if result.pr_url:
+        print(f"  PR: {result.pr_url}")
+        import subprocess as sp
+        sp.run(
+            ["gh", "issue", "comment", issue_url, "--body",
+             f"PR aberto pelo Houston fix agent: {result.pr_url}"],
+            check=False, capture_output=True,
+        )
+        _update_fix_fields(path, result.pr_url, result.state)
+    elif result.error:
+        print(f"  error: {result.error}", file=sys.stderr)
+        _update_fix_fields(path, None, "incomplete")
+
+    return 0 if result.pr_url else 1
+
+
+def _update_fix_fields(path, pr_url, fix_state):
+    """Updates fix_pr and fix_state in the report's front-matter."""
+    import yaml as _yaml
+    text = path.read_text()
+    _, front_raw, body = text.split("---", 2)
+    fm = _yaml.safe_load(front_raw)
+    fm["fix_pr"] = pr_url
+    fm["fix_state"] = fix_state
+    yaml_block = _yaml.safe_dump(fm, sort_keys=False, allow_unicode=True)
+    path.write_text(f"---\n{yaml_block}---{body}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="houston")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -250,6 +321,13 @@ def main() -> int:
     promote_p = sub.add_parser("promote", help="print (never run) a ready gh issue create for a report")
     promote_p.add_argument("fingerprint")
     promote_p.set_defaults(func=cmd_promote)
+
+    fix_p = sub.add_parser("fix", help="create a PR fixing a promoted finding (costs money)")
+    fix_p.add_argument("fingerprint")
+    fix_p.add_argument("--issue", help="GitHub issue URL (reads from front-matter if absent)")
+    fix_p.add_argument("--max-budget-usd", default="3.00")
+    fix_p.add_argument("--timeout-s", type=int, default=600)
+    fix_p.set_defaults(func=cmd_fix)
 
     args = parser.parse_args()
     return args.func(args)
