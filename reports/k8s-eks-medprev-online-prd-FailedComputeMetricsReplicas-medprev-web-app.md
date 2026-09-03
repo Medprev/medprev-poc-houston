@@ -1,7 +1,8 @@
 ---
 fingerprint: k8s-eks-medprev-online-prd-FailedComputeMetricsReplicas-medprev-web-app
 source: kubernetes
-reason: new
+reason: FailedComputeMetricsReplicas
+novelty: new
 service: medprev-web-app
 environment: production
 window:
@@ -16,12 +17,14 @@ state: seeded
 cost:
   input_tokens: 0
   output_tokens: 0
+  cache_read_input_tokens: 0
+  cache_creation_input_tokens: 0
   duration_s: 0.0
   usd: 0.0
 issue: null
-datadog_url: https://app.datadoghq.com/event/explorer?query=source%3Akubernetes%20env%3Aproduction%20status%3Awarn%20kube_namespace%3Amedprev-web-app&from_ts=1787947458029&to_ts=1788293058029&live=false
+datadog_url: https://app.datadoghq.com/event/explorer?query=source%3Akubernetes%20env%3Aproduction%20status%3Awarn%20kube_namespace%3Amedprev-web-app%20FailedComputeMetricsReplicas&from_ts=1787947458029&to_ts=1788293058029&live=false
 ---
 
-**Link do Datadog:** https://app.datadoghq.com/event/explorer?query=source%3Akubernetes%20env%3Aproduction%20status%3Awarn%20kube_namespace%3Amedprev-web-app&from_ts=1787947458029&to_ts=1788293058029&live=false
+**Link do Datadog:** https://app.datadoghq.com/event/explorer?query=source%3Akubernetes%20env%3Aproduction%20status%3Awarn%20kube_namespace%3Amedprev-web-app%20FailedComputeMetricsReplicas&from_ts=1787947458029&to_ts=1788293058029&live=false
 
 Seeded on first run — pre-existing debt, not investigated. This finding already had activity before Houston started tracking it.
