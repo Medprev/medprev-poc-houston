@@ -1,32 +1,100 @@
 # medprev-poc-houston
 
-PoC: investiga sinais do Datadog (Error Tracking, Monitors, Kubernetes events) e produz
-laudo versionado com evidência reconferível. Um `claude -p` por achado, sem acesso de
-escrita ao disco — todo laudo passa pelo gate de PII antes de chegar em `reports/`.
+PoC que detecta problemas em produção via Datadog, investiga a causa raiz com um agente de IA, e propõe correções automaticamente via PR. Derivado da arquitetura Vigília ("Versão mínima").
+
+## Como funciona
+
+O pipeline tem duas fases de agente e três decisões humanas:
+
+```
+        DETECÇÃO                    INVESTIGAÇÃO               CORREÇÃO
+   ┌─────────────────┐      ┌──────────────────────┐    ┌─────────────────────┐
+   │  Datadog API v2  │      │  claude -p (read-only)│    │  claude -p (code)   │
+   │  Error Tracking  │──┐   │  Datadog MCP tools    │    │  Bash/Read/Write    │
+   │  Kubernetes      │  │   │  $0.50 budget         │    │  $3.00 budget       │
+   │  Monitor alerts  │  │   │  300s timeout         │    │  600s timeout       │
+   └─────────────────┘  │   └──────────────────────┘    └─────────────────────┘
+                        │            ▲                           ▲
+                        ▼            │                           │
+                   ┌─────────┐  ┌────────┐  ┌──────────┐  ┌─────────┐  ┌────────┐
+                   │ Dedup + │  │  PII   │  │ Humano   │  │ Humano  │  │ Humano │
+                   │ Cap     │──│  Gate  │──│ decide   │──│ cria    │──│ revisa │
+                   │         │  │        │  │ promoted/│  │ issue   │  │ PR     │
+                   │severity,│  │CPF,CNPJ│  │discarded │  │         │  │        │
+                   │round-   │  │email,  │  │          │  │         │  │        │
+                   │robin    │  │phone,  │  │          │  │         │  │        │
+                   │         │  │PAN     │  │          │  │         │  │        │
+                   └─────────┘  └────────┘  └──────────┘  └─────────┘  └────────┘
+                        │            │           │             │            │
+                        ▼            ▼           ▼             ▼            ▼
+                    top N        reports/    state:         issue URL    fix_state:
+                    findings     *.md        promoted       no report    merged/
+                                             ou             front-      rejected
+                                             discarded      matter
+```
+
+### Passo a passo
+
+1. **Coletar** — `houston run` busca sinais de Error Tracking, Kubernetes e Monitor via Datadog REST v2. Sem custo LLM.
+
+2. **Dedup + Cap** — achados já reportados são ignorados. O resto é priorizado por severidade, depois round-robin entre fontes, depois volume. Top N selecionados (default 5).
+
+3. **Investigar** — `houston investigate` roda um `claude -p` por achado, com ferramentas de leitura do Datadog (MCP). Sem acesso de escrita ao disco — o agente só lê. Produz: causa raiz, linha do tempo, evidência com queries exatas, ação recomendada, corpo de issue pronto.
+
+4. **PII Gate** — o relatório renderizado (front-matter + corpo) passa por validação de CPF, CNPJ, email, telefone BR e PAN antes de ser gravado. Um hit redireciona para quarentena.
+
+5. **Decisão humana** — o humano lê o relatório e marca `state: promoted` (bug real, vira issue) ou `state: discarded` (ruído). Essa decisão é o que mede a taxa de falso positivo.
+
+6. **Promover** — `houston promote <fingerprint>` gera o comando `gh issue create` com o corpo 5W2H. O humano executa e cola a URL da issue no front-matter do report.
+
+7. **Corrigir** — `houston fix <fingerprint>` roda um segundo `claude -p`, agora com ferramentas de código (Bash, Read, Write, Edit), contra o repo do serviço afetado via git worktree. O agente lê o relatório, navega o codebase, escreve a correção, tenta rodar testes, e abre um PR linkado à issue.
+
+8. **Review do PR** — o squad dono do serviço revisa o PR. O agente nunca faz merge — o PR é o gate humano.
+
+9. **Métricas** — `houston metrics` computa: FP rate (discarded / decididos), fix rate (merged / tentados), custo total e por finding.
+
+### O que cada agente pode fazer
+
+| | Agente de investigação | Agente de correção |
+|---|---|---|
+| **Ferramentas** | Datadog MCP (leitura) | Bash, Read, Write, Edit, Glob, Grep |
+| **Bloqueado** | Bash, Write, Edit | Datadog MCP tools |
+| **Escopo** | Lê sinais do Datadog | Navega e edita código-fonte |
+| **Saída** | Relatório Markdown | Branch + PR no GitHub |
+| **Budget** | $0.50 | $3.00 |
+| **Gate** | PII gate + humano decide estado | Humano revisa PR |
 
 ## Setup
 
-```
+```bash
 cp .env.example .env
 # preencher DD_API_KEY e DD_APP_KEY (escopo de leitura) e DD_SITE
 ```
 
-## Origin
+Task runner: [mise](https://mise.jdx.dev). `mise run <task>`, ou `mise tasks` para a lista completa.
 
-Derived from the Vigília architecture document, "Versão mínima" tab.
+## Comandos
 
-
-## Tasks
-
-Task runner: [mise](https://mise.jdx.dev). `mise run <task>`, or see `mise tasks` for the full list.
-
-| Task | What it does | Costs money? |
+| Task | O que faz | Custo? |
 |---|---|---|
-| `mise run setup` | Install dependencies into the project venv | No |
-| `mise run lint` | `ruff check .` | No |
-| `mise run test [pattern]` | Run the test suite | No |
-| `mise run run` | Collect + dedup + cap, print what would be investigated | No |
-| `mise run seed` | Record pre-existing findings as `state: seeded` | No |
-| `mise run investigate` | Run the real agent on capped new findings | **Yes** — ~$0.24-0.40/finding |
-| `mise run promote <fingerprint>` | Print (never run) a ready `gh issue create` | No |
-| `mise run metrics` | FP rate, cost percentiles, phase-close readiness | No |
+| `mise run setup` | Instala dependências no venv do projeto | Não |
+| `mise run lint` | `ruff check .` | Não |
+| `mise run test [pattern]` | Roda a suíte de testes | Não |
+| `mise run run` | Coleta + dedup + cap, imprime o que seria investigado | Não |
+| `mise run seed` | Registra achados pré-existentes como `state: seeded` | Não |
+| `mise run investigate` | Roda o agente de investigação nos achados novos | **Sim** — ~$0.30–0.42/finding |
+| `mise run promote <fp>` | Imprime o `gh issue create` pronto | Não |
+| `mise run fix <fp> --issue <url>` | Roda o agente de correção, abre PR | **Sim** — ~$2–3/fix |
+| `mise run metrics` | FP rate, fix rate, custo, prontidão de fase | Não |
+
+## Ciclo diário (E7)
+
+```bash
+mise run run                          # ver o que apareceu
+mise run investigate                  # investigar top 5 (~$1.90)
+# ler os reports, decidir state: promoted ou discarded
+mise run promote <fingerprint>        # gerar comando de issue
+# rodar o gh issue create, colar URL no report
+mise run fix <fp> --issue <url>       # corrigir via PR (~$3.00)
+mise run metrics                      # conferir FP rate e fix rate
+```
