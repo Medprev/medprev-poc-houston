@@ -243,9 +243,30 @@ Este é o ponto mais caro do desenho, e o que mais muda em relação à PoC.
 
 **O bloqueio verificado:** na tabela de disponibilidade por plataforma, o **conector MCP** e os **Managed Agents** são `No` no Amazon Bedrock — existem só na API primária da Anthropic e na Claude Platform on AWS. Ou seja: **não dá para manter o servidor MCP do Datadog e usar Bedrock ao mesmo tempo.**
 
-**A segunda restrição verificada:** o Claude Agent SDK é o Claude Code empacotado como biblioteca — ele precisa do runtime Node e do binário `claude`. O próprio librarian registra isso no ADR-0047 §3: *"Node and the `claude` CLI are **not** installed: `claude-agent-sdk` is reached only from the CLI's `ask` path, never from either server."* A imagem de servidor deles deliberadamente não carrega esse runtime.
+**A segunda restrição verificada:** o Claude Agent SDK é o Claude Code empacotado como biblioteca — ele executa a CLI como subprocesso e precisa do runtime Node e do binário `claude`. O librarian registra isso no ADR-0047 §3: *"Node and the `claude` CLI are **not** installed: `claude-agent-sdk` is reached only from the CLI's `ask` path, never from either server."* Isso descreve a imagem de **servidor** deles, que nunca roda agente — não é impedimento para o Houston, cuja Lambda pode ser imagem de container (teto de 10 GB). É custo de empacotamento.
 
-**A saída, e a que lugar ela pertence:** trocar o servidor MCP do Datadog por **ferramentas expostas por código nosso, atrás da porta de F9**. Hoje essa porta é implementada direto contra a REST v2 do Datadog; quando o librarian ganhar seu conector Datadog, a mesma porta passa a ser servida pela fachada HTTP/JSON dele — que é exatamente o papel de proxy que o refinamento atribui ao librarian (§1.4), e o caminho que funciona sob Bedrock, onde o conector MCP não existe. O caso de uso não muda nas duas situações.
+**Correção da primeira leitura deste documento.** A v0.1 concluiu daí que o caminho era um laço próprio sobre a Messages API, e rejeitou o Agent SDK alegando que com ele *"a fronteira de escrita volta a ser configuração, não construção"*. Isso está errado, e o código do librarian mostra o contrário — ver §3.5.1.
+
+### 3.5.1 Como o librarian alcança a Bedrock, e o que o Houston herda
+
+O librarian roda sobre Bedrock em produção desde a Fase 3.5 dele. O mecanismo, lido em `apps/api/infra/agent/`:
+
+| Peça | Como está no código deles | O que o Houston herda |
+|---|---|---|
+| Interruptor | `ClaudeAgentOptions(env={"CLAUDE_CODE_USE_BEDROCK": "1"})` quando `agent_use_bedrock` é verdadeiro — o valor viaja para o ambiente do subprocesso da CLI | Igual, ligado por configuração |
+| Credencial | Fora do `Settings`, de propósito: *"the credential is NOT here — the Agent SDK reads it from the environment (one custody point, no redaction surface)"*. Cadeia AWS padrão | A role de execução da Lambda **é** a cadeia — nenhum segredo a rotacionar |
+| Preflight | `missing_credential()` confere só se há região ou perfil, porque na Bedrock a cadeia resolve preguiçosamente. Falha limpa antes de gastar | Igual, antes de qualquer invocação paga |
+| Id do modelo | Alias simples é qualificado para o perfil de inferência entre regiões (`claude-opus-4-8` → `us.anthropic.claude-opus-4-8`); os prefixos `us.` `eu.` `apac.` `global.` `anthropic.` `arn:` passam intactos | Mesma função — e a mesma pegadinha: o Haiku deles precisou de id qualificado à mão |
+| Ferramentas | `create_sdk_mcp_server` + decorador `@tool`: um servidor MCP **em processo**, não o conector remoto. O bridge inteiro cabe em ~15 linhas de `toolkit.py` | Os métodos do `datadog_client.py` viram `AgentTool` (nome, descrição, schema, handler) |
+| Custo | `ResultMessage.total_cost_usd` e `num_turns` | É o mesmo envelope que a PoC já lê |
+
+**As invariantes herméticas de `build_options`** concentram num lugar só o que a PoC hoje tenta garantir por string: `tools=[]` desliga *todos* os embutidos (filesystem, bash, web); `allowed_tools` lista cada ferramenta em processo — *"a tool absent from the assembly is not merely un-approved, it does not exist"*; `setting_sources=[]` não carrega `CLAUDE.md` nem configuração da máquina; `permission_mode="dontAsk"` nega em vez de perguntar; `max_turns` limita laço em fuga (24 na pergunta, 8 na reflexão).
+
+Isso é **mais forte** que o `--disallowedTools Bash,Write,Edit` de hoje: em vez de proibir três ferramentas por nome, parte de zero embutidos e adiciona só o declarado.
+
+Consequência que atinge o runtime do fix agent: o adaptador deles é *"one loop, many assemblies — the assembler chooses toolset, persona and identity"*. Se a correção for uma segunda montagem do mesmo laço, o argumento de imagem que pesava contra a Lambda em §5.2 desaparece. **Falta confirmar** como a versão pinada do SDK (`>=0.1,<0.2`) habilita os embutidos de escrita — o librarian só usa `tools=[]`.
+
+**A saída, e a que lugar ela pertence:** trocar o servidor MCP hospedado do Datadog por **ferramentas ligadas em processo pelo Agent SDK, atrás da porta de F9**. Hoje essa porta é implementada direto contra a REST v2 do Datadog; quando o librarian ganhar seu conector Datadog, a mesma porta passa a ser servida pela fachada HTTP/JSON dele — que é exatamente o papel de proxy que o refinamento atribui ao librarian (§1.4), e o caminho que funciona sob Bedrock, onde o conector MCP não existe. O caso de uso não muda nas duas situações.
 
 Na prática imediata: O `datadog_client.py` já é um wrapper da REST v2 do Datadog; expor três a cinco funções dele como ferramentas do modelo (buscar issue, buscar eventos, buscar logs por consulta, buscar spans) resolve o mesmo problema com três ganhos:
 
@@ -357,7 +378,7 @@ Estilo: **autocrático** — a decisão é minha, revisada pelo tech lead.
 | Plataforma | **AWS Lambda** | Decidido no refinamento; o teto de 900 s cabe na duração medida (87–148 s) |
 | Gatilho | **E3 — webhook do Datadog + varredura agendada** | O webhook é o que o refinamento pede e resolve `monitor`; a varredura cobre Error Tracking e Kubernetes, que não têm push equivalente |
 | Escopo v1 | **Ciclo completo**, incluindo o fix agent | É o que a PoC já provou de ponta a ponta (3 PRs) |
-| Modelo | **B1 — Bedrock + ferramentas atrás da porta de F9** | Único caminho compatível com Bedrock (conector MCP é `No` lá) e que mantém a restrição do ADR-0001; a porta é o que permite trocar a REST própria pela fachada do librarian depois |
+| Modelo | **Agent SDK sobre Bedrock, no padrão do librarian** | O padrão já roda em produção na casa; laço, ligação de ferramenta e contabilidade de custo prontos; embutidos desligados por construção; sem credencial nova (§3.5.1) |
 | Estado | **C1 — DynamoDB, quarentena em S3/KMS** | Escrita condicional é o que torna o fan-out seguro |
 | Fix agent | **D1 — GitHub Actions** | Roda o código atual sem reescrita e põe a separação de poder numa fronteira de plataforma |
 | Layout | Hexagonal `run → app ← infra`, portas segregadas | Torna N1 propriedade da composição, não de uma flag |
@@ -431,4 +452,5 @@ Resolvido pelo refinamento: escopo do librarian, plataforma dos agentes, gatilho
 | Versão | Data | Autora | Mudança |
 |---|---|---|---|
 | 0.1 | 2026-09-04 | Carla Cury | Primeira versão. Runtime em aberto; refinamento com o tech lead não incorporado. |
+| 0.3 | 2026-09-04 | Carla Cury | Adota o padrão de Bedrock do librarian (Agent SDK + `CLAUDE_CODE_USE_BEDROCK` + ferramentas em processo, §3.5.1). Corrige a v0.1, que rejeitava o SDK alegando fronteira de escrita frouxa — o `build_options` deles é mais estrito que a flag atual. Enfraquece um dos três argumentos de §5.2. |
 | 0.2 | 2026-09-04 | Carla Cury | Refinamento incorporado. Fecha plataforma (Lambda) e gatilho (webhook + varredura); define a fronteira librarian↔Houston (§1.4) e a porta de acesso ao Datadog (F9); reconcilia o custo com os 14k/11k tokens. Resta o runtime do fix agent (§5.2). |
