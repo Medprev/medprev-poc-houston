@@ -1,6 +1,6 @@
 # RFC — Houston na cloud: da PoC local a um serviço agendado na AWS
 
-**Status:** Em revisão
+**Status:** Em revisão — cinco dimensões fechadas, a Dimensão D aguarda decisão (§5.2)
 **Data:** 2026-09-04
 **Autora:** Carla Cury
 **Decisores:** Carla Cury — estilo autocrático, com revisão do tech lead
@@ -33,7 +33,7 @@ Quem nunca abriu este repo precisa destes termos para ler o resto.
 | **Estado do relatório** | `seeded` (dívida pré-existente, nunca investigada) · `new` (investigado, aguardando humano) · `promoted` (virou issue) · `discarded` (ruído) · `incomplete` (falhou/estourou tempo) · `quarantined`. |
 | **Agente de investigação** | Um processo de LLM só-leitura que lê o Datadog e escreve um relatório. Não tem ferramenta de escrita. |
 | **Agente de correção (fix agent)** | Um processo de LLM com ferramentas de código que edita o repo do serviço afetado e abre um PR. Nunca faz merge. |
-| **MCP** | *Model Context Protocol* — o protocolo pelo qual o agente ganha ferramentas externas. Hoje o agente de investigação usa o servidor MCP do Datadog. |
+| **MCP** | *Model Context Protocol* — o protocolo pelo qual o agente ganha ferramentas. Vem em duas formas, e a diferença decide §3.5: **remoto/hospedado** (a API chama um servidor MCP de terceiro — é o que a PoC usa hoje com o servidor do Datadog, e o que **não existe na Bedrock**) e **em processo** (o SDK expõe funções do próprio código como ferramentas — funciona em qualquer provedor). |
 | **Bedrock** | Serviço da AWS que serve modelos Claude sob a identidade AWS da conta, sem chave da Anthropic. |
 | **Hexagonal `app`/`infra`/`run`** | Layout do librarian: `app` é a regra de negócio pura, `infra` fala com o mundo, `run` é o ponto de entrada que monta os dois. As setas apontam `run → app ← infra`. |
 | **Fan-out** | Quebrar um lote em N mensagens independentes, cada uma processada por uma invocação separada. |
@@ -268,17 +268,15 @@ Consequência que atinge o runtime do fix agent: o adaptador deles é *"one loop
 
 **A saída, e a que lugar ela pertence:** trocar o servidor MCP hospedado do Datadog por **ferramentas ligadas em processo pelo Agent SDK, atrás da porta de F9**. Hoje essa porta é implementada direto contra a REST v2 do Datadog; quando o librarian ganhar seu conector Datadog, a mesma porta passa a ser servida pela fachada HTTP/JSON dele — que é exatamente o papel de proxy que o refinamento atribui ao librarian (§1.4), e o caminho que funciona sob Bedrock, onde o conector MCP não existe. O caso de uso não muda nas duas situações.
 
-Na prática imediata: O `datadog_client.py` já é um wrapper da REST v2 do Datadog; expor três a cinco funções dele como ferramentas do modelo (buscar issue, buscar eventos, buscar logs por consulta, buscar spans) resolve o mesmo problema com três ganhos:
+Na prática imediata, o `datadog_client.py` já é um wrapper da REST v2; expor três a cinco funções dele como `AgentTool` (buscar issue, agregar erros, buscar eventos, consultar logs por query) resolve o problema com três ganhos:
 
-- **Bedrock volta a ser possível** — sem chave nova da Anthropic, atendendo à mesma restrição que gerou o ADR-0001, agora por outro caminho.
-- **A superfície de ferramenta vira código nosso.** O ADR-0016 hoje monta a allowlist por heurística de verbo no nome da ferramenta MCP, e falha fechado porque não há introspecção scriptável. Com ferramentas próprias, o conjunto é literal: o que não está no dicionário não existe. A heurística some, e com ela o ADR-0016.
+- **Bedrock volta a ser possível** — sem chave nova da Anthropic, honrando a mesma restrição que gerou o ADR-0001, agora por outro caminho.
+- **A superfície de ferramenta vira código nosso.** O ADR-0016 monta a allowlist por heurística de verbo no nome da ferramenta MCP, e falha fechado porque não há introspecção scriptável. Com ferramentas declaradas, o conjunto é literal. A heurística some, e com ela o ADR-0016.
 - **O snapshot manual de inventário MCP some** (`houston/mcp_tool_inventory_snapshot.txt`, hoje atualizado à mão).
 
-O laço do agente passa a ser um laço explícito sobre `POST /v1/messages` (pedir → executar ferramenta → devolver resultado → repetir até `end_turn`), com teto de iterações e de tokens. São dezenas de linhas, provider-agnóstico, sem dependência de beta.
+**O que isso custa:** perde-se o catálogo pronto do MCP hospedado do Datadog — o agente enxerga só o que expusermos. Nos 9 relatórios pagos a evidência citada se resume a busca de issue, agregação de erros e consulta de eventos, então é sustentável; mas é redução real de alcance, e por isso a Fase 1 é um piloto medido antes de cortar o caminho antigo.
 
-**O que isso custa:** perde-se o catálogo pronto de ferramentas do MCP do Datadog. O agente passa a enxergar só o que expusermos. Para a investigação atual isso é suficiente — as evidências nos 9 relatórios pagos citam essencialmente busca de issue, agregação de erros e consulta de eventos — mas é uma redução real de alcance e precisa ser validada com um piloto medido.
-
-**O fix agent é caso à parte.** Ele precisa de `Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep` — reimplementar isso sobre a Messages API é reescrever meio Claude Code. Aqui a decisão certa é *não* portar: manter o `claude -p` como está e rodá-lo onde Node, `git` e `gh` já existem nativamente. Ver §4, dimensão [Runtime].
+**O fix agent, sob esta decisão, deixa de ser caso à parte.** O adaptador do librarian é *"one loop, many assemblies"*: a montagem escolhe conjunto de ferramentas, persona e identidade. A correção passa a ser uma segunda montagem — a que habilita os embutidos de escrita — em vez de um `claude -p` chamado à mão. Isso remove o argumento de empacotamento que pesava contra rodá-la em Lambda; o que resta a decidir está na Dimensão D e em §5.2. **Falta confirmar** como a versão pinada do SDK (`>=0.1,<0.2`) habilita esses embutidos: o librarian só usa `tools=[]`.
 
 ### 3.6 Identidade e segredos
 
@@ -329,24 +327,18 @@ O fix agent é o oposto: 600 s de timeout, mais `git clone`, `git worktree`, exe
 | | | | Runner do Actions expõe o token de instalação a um agente que executa código arbitrário do repo-alvo | Alto | Média | GitHub App com permissão mínima, escopo por repo, token de vida curta, proibição de push em `main` já no prompt e por branch protection | Revogar a instalação; branch protection barra o estrago |
 | **A4 — Lambda MicroVM** | Até **8 h** de execução por MicroVM, baseada em imagem — investigação e correção caberiam no mesmo runtime | Zero precedente na Medprev; ARM64; superfície nova para operar e para revisar | Aposta em serviço sem uso interno prévio, num projeto de uma pessoa | Alto | Alta | — | Cair para A3, que resolve o mesmo problema com peças conhecidas |
 
-### Dimensão E — O que dispara uma rodada
-
-| Alternativa | Prós | Contras | Risco | Impacto | Probab. | Mitigação | Contingência |
-|---|---|---|---|---|---|---|---|
-| **E1 — Webhook do Datadog** (o do refinamento) | Um achado por evento: o fan-out vira natural e o teto de 900 s sai do caminho crítico; latência de minutos em vez de um dia; sem invocação vazia | Cobre bem a fonte `monitor`; Error Tracking e Kubernetes só chegam por webhook se alguém criar monitores para eles — o que empurra regra de detecção para dentro da configuração do Datadog | Endpoint público recebe evento forjado e paga investigação | Alto | Média | Segredo em header custom do webhook, validado antes de qualquer chamada de modelo; teto diário de gasto | Rotacionar o segredo; desligar a rota |
-| | | | Uma tempestade de alertas dispara dezenas de investigações pagas | Alto | Média | Teto diário no `cap()` reaproveitado como controle de gasto; dedup por fingerprint corta a repetição | Alarme de gasto e desligamento da rota |
-| **E2 — Varredura agendada** (o que a PoC faz) | Cobre as três fontes sem depender de configuração no Datadog; o `cap()` funciona como foi desenhado | Latência de um dia; lote não cabe em Lambda sem fan-out; invoca mesmo quando não há nada | Achado urgente espera a próxima rodada | Médio | Alta | Cadência mais curta | — |
-| **E3 — Os dois** (recomendado) | Webhook onde o Datadog empurra, varredura onde ele não empurra; nenhuma fonte perde cobertura | Dois caminhos de entrada para testar e observar | Um achado entra pelos dois caminhos e é investigado duas vezes | Médio | Alta | O fingerprint é o mesmo nos dois caminhos, e a reserva condicional resolve na primeira escrita | Reconciliação por custo duplicado |
-
 ### Dimensão B — Como o agente alcança o modelo
 
+O mecanismo do librarian está descrito em §3.5.1; aqui ele é pesado contra as alternativas.
+
 | Alternativa | Prós | Contras | Risco | Impacto | Probab. | Mitigação | Contingência |
 |---|---|---|---|---|---|---|---|
-| **B1 — Bedrock + ferramentas próprias sobre a REST do Datadog** | Sem chave nova da Anthropic (a restrição do ADR-0001 continua honrada); identidade AWS por role; superfície de ferramenta explícita, o que aposenta a heurística do ADR-0016; Python puro, empacota em qualquer runtime | Perde o catálogo pronto do MCP do Datadog; o alcance do agente passa a ser o que expusermos | A investigação piora porque faltou uma ferramenta que o MCP dava | Alto | Média | Piloto medido: rodar os mesmos achados já investigados e comparar os relatórios lado a lado antes de cortar o caminho antigo | Voltar para B2 nos achados onde a qualidade cair |
-| | | | Modelo Claude não habilitado na conta/região Bedrock da Medprev | Alto | Média | Confirmar habilitação e região antes de escrever código | Usar a região onde já está habilitado |
-| **B2 — API primária da Anthropic + conector MCP** | Mantém o servidor MCP do Datadog e o alcance atual; menos reescrita | Exige a chave que o ADR-0001 recusou; conector MCP é beta; nova linha de custo e de governança de credencial | A chave vira um segredo a mais para rotacionar e auditar | Médio | Alta | Secrets Manager + rotação | — |
-| **B3 — Claude Agent SDK (caminho do librarian)** | É o que o librarian usa hoje e funciona sobre Bedrock; ferramentas embutidas prontas | Precisa de Node + binário `claude` no runtime — o próprio ADR-0047 do librarian exclui esse runtime da imagem de servidor; empacotamento pesado em Lambda | A imagem cresce e a fronteira "quem pode escrever" volta a ser configuração do SDK | Médio | Média | Imagem de container com camada fixada | Usar B1 na investigação e reservar o SDK/CLI só ao fix agent |
-| **B4 — Manter `claude -p` como está, num runtime com o CLI** | Zero reescrita | A credencial é de sessão humana; não existe em runtime automatizado | O serviço para quando a credencial da máquina expira | Alto | Alta | — | Inviável para serviço; permanece só no CLI local |
+| **B1 — Agent SDK sobre Bedrock (padrão do librarian)** | Já roda em produção na casa; laço, ligação de ferramenta em processo e contabilidade de custo prontos; embutidos desligados por construção (`tools=[]` + `allowed_tools`), o que é mais estrito que o `--disallowedTools` de hoje; sem chave nova da Anthropic; o mesmo adaptador serve investigação e correção como montagens distintas | Exige Node e o binário `claude` no runtime, logo imagem de container; SDK pinado `<0.2` porque a API 0.x ainda se mexe | Uma quebra de API do SDK entre 0.1 e 0.2 obriga porte simultâneo aqui e no librarian | Médio | Média | Pinar exatamente a mesma faixa que o librarian pina, e subir junto | Congelar a versão; o adaptador é uma porta |
+| | | | Modelo Claude não habilitado, ou perfil `us.anthropic.*` inexistente na conta/região | Alto | Média | Confirmar habilitação e perfil antes de escrever código — foi exatamente o que mordeu o librarian no Haiku | Pinar o id qualificado à mão, como eles fizeram |
+| | | | A investigação piora sem o catálogo do MCP hospedado | Alto | Média | Piloto medido: reinvestigar os 9 achados e comparar lado a lado antes de cortar o caminho antigo | Voltar a B3 nos achados onde a qualidade cair |
+| **B2 — Laço próprio sobre a Messages API** | Python puro, empacota em qualquer runtime, sem Node; sem dependência de SDK 0.x | Reescreve laço, ligação de ferramenta, teto de turnos e contabilidade de custo que já existem e já foram provados na casa; passa a haver dois jeitos de fazer a mesma coisa na Medprev | Divergência silenciosa entre o comportamento do Houston e o do librarian | Médio | Alta | — | Adotar B1 |
+| **B3 — API primária da Anthropic + conector MCP remoto** | Mantém o servidor MCP hospedado do Datadog e o alcance atual | Exige a chave que o ADR-0001 recusou; o conector é `No` na Bedrock e beta na API primária; nova linha de custo e de governança de credencial | A chave vira mais um segredo para rotacionar e auditar | Médio | Alta | Secrets Manager + rotação | — |
+| **B4 — Manter `claude -p` como está** | Zero reescrita | A credencial é de sessão humana; não existe em runtime automatizado | O serviço para quando a credencial da máquina expira | Alto | Alta | — | Inviável para serviço; permanece só no CLI local |
 
 ### Dimensão C — Onde o estado vive
 
@@ -361,8 +353,17 @@ O fix agent é o oposto: 600 s de timeout, mais `git clone`, `git worktree`, exe
 | Alternativa | Prós | Contras | Risco | Impacto | Probab. | Mitigação | Contingência |
 |---|---|---|---|---|---|---|---|
 | **D1 — GitHub Actions** | `git`, `gh`, Node e o CLI já existem; 6 h de limite; `fix_agent.py` roda praticamente sem mudança; a credencial de escrita nunca entra na AWS | Segunda plataforma; custo de LLM fora do orçamento AWS | O agente executa código arbitrário do repo-alvo no runner | Alto | Média | GitHub App com escopo mínimo; branch protection em `main`; proibição de force-push | Revogar instalação |
-| **D2 — Lambda de container com Node+git+gh** | Uma plataforma só; orçamento único | Imagem grande; 900 s pode não bastar para clonar, corrigir e rodar testes de um repo grande; `/tmp` precisa ser dimensionado | Timeout no meio do fix deixa branch órfã | Médio | Alta | `/tmp` em 10 GB e limpeza de worktree no `finally` (já existe no código) | Reexecutar com `-v2` na branch, como o código já faz |
+| **D2 — Lambda de container com Node+git+gh** | Uma plataforma só; orçamento único; **a imagem já é exigida pela B1**, então deixou de ser custo incremental | 900 s pode não bastar para clonar, corrigir e rodar testes de um repo grande; `/tmp` precisa ser dimensionado | Timeout no meio do fix deixa branch órfã | Médio | Alta | `/tmp` em 10 GB e limpeza de worktree no `finally` (já existe no código) | Reexecutar com `-v2` na branch, como o código já faz |
 | **D3 — EKS Job** | Sem teto de tempo; imagem comum com A2 | Só compensa se A2 for a escolha do runtime de investigação | — | — | — | — | — |
+
+### Dimensão E — O que dispara uma rodada
+
+| Alternativa | Prós | Contras | Risco | Impacto | Probab. | Mitigação | Contingência |
+|---|---|---|---|---|---|---|---|
+| **E1 — Webhook do Datadog** (o do refinamento) | Um achado por evento: o fan-out vira natural e o teto de 900 s sai do caminho crítico; latência de minutos em vez de um dia; sem invocação vazia | Cobre bem a fonte `monitor`; Error Tracking e Kubernetes só chegam por webhook se alguém criar monitores para eles — o que empurra regra de detecção para dentro da configuração do Datadog | Endpoint público recebe evento forjado e paga investigação | Alto | Média | Segredo em header custom do webhook, validado antes de qualquer chamada de modelo; teto diário de gasto | Rotacionar o segredo; desligar a rota |
+| | | | Uma tempestade de alertas dispara dezenas de investigações pagas | Alto | Média | Teto diário no `cap()` reaproveitado como controle de gasto; dedup por fingerprint corta a repetição | Alarme de gasto e desligamento da rota |
+| **E2 — Varredura agendada** (o que a PoC faz) | Cobre as três fontes sem depender de configuração no Datadog; o `cap()` funciona como foi desenhado | Latência de um dia; lote não cabe em Lambda sem fan-out; invoca mesmo quando não há nada | Achado urgente espera a próxima rodada | Médio | Alta | Cadência mais curta | — |
+| **E3 — Os dois** (recomendado) | Webhook onde o Datadog empurra, varredura onde ele não empurra; nenhuma fonte perde cobertura | Dois caminhos de entrada para testar e observar | Um achado entra pelos dois caminhos e é investigado duas vezes | Médio | Alta | O fingerprint é o mesmo nos dois caminhos, e a reserva condicional resolve na primeira escrita | Reconciliação por custo duplicado |
 
 ---
 
@@ -370,7 +371,7 @@ O fix agent é o oposto: 600 s de timeout, mais `git clone`, `git worktree`, exe
 
 Estilo: **autocrático** — a decisão é minha, revisada pelo tech lead.
 
-### 5.1 Decidido
+### 5.1 Decidido — oito de nove dimensões
 
 | Dimensão | Decisão | Razão de uma linha |
 |---|---|---|
@@ -380,7 +381,7 @@ Estilo: **autocrático** — a decisão é minha, revisada pelo tech lead.
 | Escopo v1 | **Ciclo completo**, incluindo o fix agent | É o que a PoC já provou de ponta a ponta (3 PRs) |
 | Modelo | **Agent SDK sobre Bedrock, no padrão do librarian** | O padrão já roda em produção na casa; laço, ligação de ferramenta e contabilidade de custo prontos; embutidos desligados por construção; sem credencial nova (§3.5.1) |
 | Estado | **C1 — DynamoDB, quarentena em S3/KMS** | Escrita condicional é o que torna o fan-out seguro |
-| Fix agent | **D1 — GitHub Actions** | Roda o código atual sem reescrita e põe a separação de poder numa fronteira de plataforma |
+| Fix agent | **em aberto** — recomendação D1 (GitHub Actions) | Único ponto em aberto; o argumento inteiro e a alternativa viável estão em §5.2 |
 | Layout | Hexagonal `run → app ← infra`, portas segregadas | Torna N1 propriedade da composição, não de uma flag |
 | Identidade | Role AWS para o modelo; GitHub App para escrita | Precedente do librarian (ADR-0018); sem credencial pessoal |
 
@@ -388,9 +389,11 @@ Estilo: **autocrático** — a decisão é minha, revisada pelo tech lead.
 
 O refinamento diz *"ambos devem ser hospedados na AWS Lambda"*, e para detecção e investigação isso fecha sem atrito. **Para o fix agent eu recomendaria o contrário**, e coloco o argumento aqui em vez de decidir sozinha.
 
-O fix agent precisa de `git`, `gh`, Node e o binário `claude`, mais espaço para clonar um repo e rodar a suíte dele, dentro de 900 s. Em Lambda isso significa uma imagem de container carregando esses runtimes e um `/tmp` dimensionado — e o `medprev-rest-api` clonado com testes rodando é o tipo de coisa que encosta nos 900 s. No GitHub Actions esse mesmo agente roda **sem uma linha de mudança**: o ambiente já tem tudo, o limite é de 6 h, e o token de escrita nunca precisa entrar na AWS.
+**A decisão da Dimensão B enfraqueceu um dos meus três argumentos.** Eu escrevia que a Lambda de correção exigiria uma imagem pesada com Node e a CLI; mas B1 já exige essa imagem para a investigação, então ela deixou de ser custo incremental. Sobram dois argumentos, e eles seguem de pé.
 
-Há um ganho de segurança junto: com o fix agent no Actions, N1 deixa de ser uma flag `--disallowedTools` e passa a ser uma fronteira de plataforma. **O processo que lê produção não tem token do GitHub; o processo que escreve código não tem chave do Datadog.**
+O primeiro é tempo. O fix agent precisa clonar um repositório e rodar a suíte dele dentro de 900 s — e o `medprev-rest-api` com testes rodando é o tipo de coisa que encosta nesse teto. No GitHub Actions esse mesmo agente roda **sem uma linha de mudança**: o ambiente já tem tudo, o limite é de 6 h, e o token de escrita nunca precisa entrar na AWS.
+
+O segundo é credencial. Com o fix agent no Actions, N1 deixa de ser garantido só pela composição e passa a ser fronteira de plataforma. **O processo que lê produção não tem token do GitHub; o processo que escreve código não tem chave do Datadog.**
 
 O que pesa do outro lado, e é real: duas plataformas para operar e depurar, num serviço mantido por uma pessoa, e o custo de LLM aparecendo em dois relatórios. Se a preferência for plataforma única, D2 (Lambda de container) é viável — a mitigação é `/tmp` em 10 GB e aceitar que repositório grande com suíte lenta vai estourar às vezes, caindo em `incomplete` e sendo reexecutado, que é o comportamento que o código já tem.
 
@@ -452,5 +455,6 @@ Resolvido pelo refinamento: escopo do librarian, plataforma dos agentes, gatilho
 | Versão | Data | Autora | Mudança |
 |---|---|---|---|
 | 0.1 | 2026-09-04 | Carla Cury | Primeira versão. Runtime em aberto; refinamento com o tech lead não incorporado. |
+| 1.0 | 2026-09-04 | Carla Cury | Passada de leitura de ponta a ponta. Corrige a contradição entre §3.5 e §3.5.1 (o texto ainda prescrevia laço próprio sobre a Messages API depois de a decisão ter mudado), reescreve a Dimensão B em torno do Agent SDK, reordena a Dimensão E para depois da D, conserta a referência quebrada a uma dimensão inexistente, e registra em §5.2 que a Dimensão B derrubou um dos três argumentos contra a Lambda para o fix agent. |
 | 0.3 | 2026-09-04 | Carla Cury | Adota o padrão de Bedrock do librarian (Agent SDK + `CLAUDE_CODE_USE_BEDROCK` + ferramentas em processo, §3.5.1). Corrige a v0.1, que rejeitava o SDK alegando fronteira de escrita frouxa — o `build_options` deles é mais estrito que a flag atual. Enfraquece um dos três argumentos de §5.2. |
 | 0.2 | 2026-09-04 | Carla Cury | Refinamento incorporado. Fecha plataforma (Lambda) e gatilho (webhook + varredura); define a fronteira librarian↔Houston (§1.4) e a porta de acesso ao Datadog (F9); reconcilia o custo com os 14k/11k tokens. Resta o runtime do fix agent (§5.2). |
