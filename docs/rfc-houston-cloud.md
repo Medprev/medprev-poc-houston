@@ -13,7 +13,7 @@
 - `docs/adr/0001` a `docs/adr/0021` — as decisões que a PoC já pagou para aprender.
 - `Medprev/medprev-librarian`: `ARCHITECTURE.md`, `CONTEXT.md`, `ROADMAP.md`, `docs/adr/` — a referência de práticas.
 - `Medprev/medprev-cloud-iac` — o padrão real de Lambda da casa (`modules/**/lambda.tf`).
-- Refinamento com o tech lead (Granola, "AI agents architecture — library, monitoring, and QA testing"). **Não incorporado**: a nota exige login e não pôde ser lida. Ver §8.
+- Refinamento com o tech lead (Granola, "AI agents architecture — library, monitoring, and QA testing"), **incorporado nesta versão**. É a fonte de quatro definições: o escopo do librarian, o gatilho por webhook, a plataforma dos agentes e o custo por rodada.
 
 ---
 
@@ -84,11 +84,21 @@ Cinco coisas que a PoC resolveu de um jeito que só funciona localmente:
 
 Some-se a isso o objetivo declarado: **deixar disponível na cloud** e **seguir as práticas do medprev-librarian**.
 
-### 1.4 O que "as práticas do librarian" significam de fato
+### 1.4 A fronteira entre o librarian e o Houston
 
-Verificado no repo: **o librarian não tem Lambda.** O `ROADMAP.md` marca *"Phase 7 — Deploy: DEFERRED"* e a `docs/runbooks/deploy.md` abre com *"hosting is still Phase 7 — deferred: no target platform is decided"*. O que existe é empacotamento (ADR-0047: uma imagem OCI, dois comandos).
+O refinamento com o tech lead resolveu uma confusão que estava travando o desenho — nas palavras da própria nota, *"Max citou o librarian como destino para tudo, mas ele não resolve tudo: gerou confusão"*. A definição que ficou:
 
-Portanto herdar do librarian **não é copiar o deploy dele** — é herdar o modo de construir:
+> **O librarian é um indexador, não um agente.** Ele cria ferramentas de acesso a Google Drive, GitHub, Slack, Metabase, Datadog e PostHog, e funciona como **proxy** para serviços que o agente não alcança direto. A intenção é mantê-lo puro, sem skills embutidas. **Os agentes de QA e de AIOps são projetos separados que usam o librarian como ferramental.**
+
+Isso decide a forma do repositório (§3.1) e muda de onde vêm as ferramentas do agente (§3.5). O Houston é um **consumidor** do librarian, não uma extensão dele.
+
+**Uma restrição de sequência, verificada:** o librarian **ainda não tem conector Datadog**. Os conectores implementados hoje são Notion, GitHub e Google (Drive, Gmail, Calendar) — Datadog está na lista de intenção da nota, não no código. O Houston precisa de ferramentas Datadog agora. Logo: o acesso ao Datadog fica **atrás de uma porta** no Houston, implementada hoje direto contra a REST v2 e trocável pela fachada do librarian quando o conector existir. Essa é a razão prática, e não estética, para o layout hexagonal.
+
+### 1.5 O que herdar do librarian como método
+
+Verificado no repo: **o librarian não tem Lambda.** O `ROADMAP.md` marca *"Phase 7 — Deploy: DEFERRED"* e a `docs/runbooks/deploy.md` abre com *"hosting is still Phase 7 — deferred: no target platform is decided"*. O que existe é empacotamento (ADR-0047: uma imagem OCI, dois comandos). O refinamento é coerente com isso ao separar as plataformas: *"ambos devem ser hospedados na AWS Lambda; Kubernetes faz mais sentido para o librarian (disponibilidade contínua)"* — o indexador é um serviço que fica de pé, os agentes são disparados por evento.
+
+Herdar do librarian é herdar o modo de construir:
 
 - Layout hexagonal `run → app ← infra` com nomes de intenção, não de padrão (ADR-0002 "screaming layout").
 - **Portas segregadas por capacidade**: uma habilidade depende só da fatia que usa, e o que não pode escrever não recebe porta de escrita. A separação é estrutural, verificada por teste e por contrato de import-linter — não por flag.
@@ -96,9 +106,9 @@ Portanto herdar do librarian **não é copiar o deploy dele** — é herdar o mo
 - Terraform real rodando em LocalStack no dev, para que o mesmo HCL suba na AWS depois.
 - DynamoDB + KMS como substrato de estado e segredo; adaptador ligado à partição no construtor.
 - Log estruturado JSON com `correlation_id` e redação de segredo; trilha de auditoria por ação.
-- Modelo alcançado por uma porta configurável, com **Bedrock sob a identidade AWS** como caminho de credencial (ADR-0019 §3) — exatamente o que dissolve a restrição do nosso ADR-0001.
+- Modelo alcançado por uma porta configurável, com **Bedrock sob a identidade AWS** como caminho de credencial (ADR-0019 §3) — o que dissolve a restrição do nosso ADR-0001.
 
-### 1.5 Fora de escopo
+### 1.6 Fora de escopo
 
 - **Console web.** O librarian tem um (`apps/web`, Vue). Houston v1 não terá; o gate humano vive no GitHub.
 - **Multi-tenant.** O librarian separa Tenant e Project porque serve vários. Houston serve uma organização só.
@@ -106,6 +116,9 @@ Portanto herdar do librarian **não é copiar o deploy dele** — é herdar o mo
 - **Mudar o prompt de investigação.** O texto e a estrutura de saída permanecem.
 - **O `medprev-houston`.** Nome já ocupado por um sistema diferente (`medprev-product-backlog#242`/`#5483`) — ver ADR-0002.
 - **Merge automático.** O PR continua sendo o gate humano.
+- **O agente de QA.** Projeto separado, com gatilho em PR aberta e possivelmente EC2 Spot + Playwright. Ele é, porém, o **próximo consumidor do molde** que este repo criar — ver N11.
+- **Migração Vue 3.3→3.5 e o benchmark TRIMS.** Assunto do mesmo refinamento, sem interseção com este desenho.
+- **Construir o conector Datadog do librarian.** Fica na porta (§1.4); quem o constrói e quando é pergunta aberta (§8).
 
 ---
 
@@ -125,6 +138,7 @@ Cada item abaixo passa em pelo menos um dos testes de relevância arquitetural: 
 | **F6** | Corrigir um achado promovido com um agente de código que abre PR ligado à issue, em branch dedicada, sem merge e sem force-push. |
 | **F7** | Computar FP rate, fix rate, custo total e por achado a partir do estado persistido — nunca digitado à mão. |
 | **F8** | Oferecer o mesmo fluxo por linha de comando local, para depurar sem subir infra. |
+| **F9** | Alcançar o Datadog por uma porta, não por chamada direta espalhada — para que a implementação troque de REST própria para a fachada do librarian sem tocar em caso de uso. |
 
 ### 2.2 Não funcionais
 
@@ -140,6 +154,7 @@ Cada item abaixo passa em pelo menos um dos testes de relevância arquitetural: 
 | **N8** | LGPD: nenhum conteúdo de log ou dado de usuário sai do Datadog para o armazenamento. Evidência é sempre ponteiro + consulta. | PII gate + a prática já escrita no prompt. |
 | **N9** | Custo mensal de operação previsível e declarado, com alarme quando exceder o teto. | Orçamento por tag + alarme. |
 | **N10** | Uma rodada que falha é observável em minutos, não no dia seguinte. | Alarme de falha e de rodada vazia. |
+| **N11** | A estrutura do repo serve de molde para o próximo agente (QA), que segundo o refinamento *"segue o mesmo modelo do Houston"*. O que é específico de AIOps fica isolado do que é esqueleto. | Um leitor consegue apontar o que copiaria para o agente de QA. |
 
 ---
 
@@ -150,6 +165,8 @@ Cada componente abaixo existe porque atende a um requisito nomeado. Onde eu não
 ### 3.1 Forma do repositório
 
 Repo próprio, `medprev-houston-agent`, seguindo as convenções do librarian: `mise.toml` na raiz, tarefas em `.mise/tasks/<grupo>/`, `CONTEXT.md` + `ARCHITECTURE.md` + `ROADMAP.md`, `docs/adr/` continuando a numeração desta PoC (0022 em diante), Terraform em `infra/terraform/` rodando contra LocalStack no dev.
+
+O refinamento pede que o agente de QA *"siga o mesmo modelo do Houston"*. Então o repo tem duas metades legíveis: o **esqueleto** (composição, portas, store, gate de PII, contabilidade de custo, IaC, tarefas) e o **domínio AIOps** (fontes Datadog, fingerprint, cap, prompts). Copiar o esqueleto e trocar o domínio é o que o próximo agente vai fazer.
 
 Os 21 ADRs e os 152 relatórios da PoC migram junto — a transferência de repositório carrega o histórico completo, que é exatamente a razão pela qual o PII gate roda desde o primeiro commit (ADR-0003).
 
@@ -185,23 +202,28 @@ O ganho que N1 cobra: o caso de uso de investigação recebe `SignalSource` + `I
 ### 3.3 Fluxo dinâmico — a rodada diária
 
 ```
- 1. Agendador dispara a rodada                        (cron)
- 2. Coleta chama Datadog nas 3 fontes                 (sem custo de LLM)
- 3. Normaliza → fingerprint → consulta o ReportStore  (dedup, F2)
- 4. Cap por severidade + round-robin                  (top N, default 5)
- 5. Grava marcador idempotente por achado             (escrita condicional)
- 6. Para cada achado: uma unidade de execução isolada (fan-out)
- 7.   Agente só-leitura investiga                     (teto de custo + relógio)
- 8.   PII gate roda no arquivo renderizado inteiro    (F4)
- 9.   Grava relatório (ou quarentena) + custo         (N2, N7)
-10. Humano lê, decide promoted/discarded, cria issue  (F5)
-11. Correção é disparada para um achado promovido     (F6)
-12.   Agente de código abre PR ligado à issue
-13. Squad dono revisa o PR                            (gate humano final)
-14. Métricas recomputam do store                      (F7)
+ 1. Datadog dispara o webhook quando um monitor alerta  (push, não cron)
+ 2. Handler valida a assinatura e normaliza o payload   (1 achado por evento)
+ 3. Fingerprint → consulta o ReportStore                (dedup, F2)
+ 4. Reserva o achado com escrita condicional            (idempotência)
+ 5.   Agente só-leitura investiga                       (teto de custo + relógio)
+ 6.   PII gate roda no arquivo renderizado inteiro      (F4)
+ 7.   Grava relatório (ou quarentena) + custo           (N2, N7)
+ 8. Humano lê, decide promoted/discarded, cria issue    (F5)
+ 9. Correção é disparada para um achado promovido       (F6)
+10.   Agente de código abre PR ligado à issue
+11. Squad dono revisa o PR                              (gate humano final)
+12. Métricas recomputam do store                        (F7)
+
+ — em paralelo, para o que o Datadog não empurra —
+ A. Varredura agendada de Error Tracking e Kubernetes    (cron)
+ B. Dedup + cap por severidade e round-robin             (top N, ADR-0018)
+ C. Cada achado entra no mesmo passo 4 acima             (fan-out)
 ```
 
-Os passos 1–9 são automáticos. Os passos 10, 13 são humanos. O passo 11 é humano hoje e pode virar automático depois — não em v1.
+Os passos 1–7 e A–C são automáticos. Os passos 8 e 11 são humanos. O passo 9 é humano em v1.
+
+**O que o webhook muda no que já existe.** Com o Datadog empurrando um evento por vez, o fan-out deixa de ser uma escolha de engenharia e passa a ser a forma natural do problema — e o limite de 900 s da Lambda some do caminho crítico. Em compensação, o `cap()` (ADR-0018) perde a função de escolher os N melhores de um lote: no caminho de webhook não há lote. Ele não morre — vira **controle de gasto**, um teto diário de investigações pagas, com a mesma ordenação por severidade decidindo quem passa quando o teto aperta. E a varredura agendada, que ainda existe para Error Tracking e Kubernetes, continua usando o `cap()` como hoje.
 
 ### 3.4 Persistência
 
@@ -223,7 +245,9 @@ Este é o ponto mais caro do desenho, e o que mais muda em relação à PoC.
 
 **A segunda restrição verificada:** o Claude Agent SDK é o Claude Code empacotado como biblioteca — ele precisa do runtime Node e do binário `claude`. O próprio librarian registra isso no ADR-0047 §3: *"Node and the `claude` CLI are **not** installed: `claude-agent-sdk` is reached only from the CLI's `ask` path, never from either server."* A imagem de servidor deles deliberadamente não carrega esse runtime.
 
-**A saída:** trocar o servidor MCP do Datadog por **ferramentas próprias**. O `datadog_client.py` já é um wrapper da REST v2 do Datadog; expor três a cinco funções dele como ferramentas do modelo (buscar issue, buscar eventos, buscar logs por consulta, buscar spans) resolve o mesmo problema com três ganhos:
+**A saída, e a que lugar ela pertence:** trocar o servidor MCP do Datadog por **ferramentas expostas por código nosso, atrás da porta de F9**. Hoje essa porta é implementada direto contra a REST v2 do Datadog; quando o librarian ganhar seu conector Datadog, a mesma porta passa a ser servida pela fachada HTTP/JSON dele — que é exatamente o papel de proxy que o refinamento atribui ao librarian (§1.4), e o caminho que funciona sob Bedrock, onde o conector MCP não existe. O caso de uso não muda nas duas situações.
+
+Na prática imediata: O `datadog_client.py` já é um wrapper da REST v2 do Datadog; expor três a cinco funções dele como ferramentas do modelo (buscar issue, buscar eventos, buscar logs por consulta, buscar spans) resolve o mesmo problema com três ganhos:
 
 - **Bedrock volta a ser possível** — sem chave nova da Anthropic, atendendo à mesma restrição que gerou o ADR-0001, agora por outro caminho.
 - **A superfície de ferramenta vira código nosso.** O ADR-0016 hoje monta a allowlist por heurística de verbo no nome da ferramenta MCP, e falha fechado porque não há introspecção scriptável. Com ferramentas próprias, o conjunto é literal: o que não está no dicionário não existe. A heurística some, e com ela o ADR-0016.
@@ -264,7 +288,9 @@ Log JSON estruturado seguindo o contrato de logging da casa, com `correlation_id
 
 ## 4. Análise de alternativas
 
-### Dimensão A — Onde o agente executa
+### Dimensão A — Onde o agente executa  ·  **fechada pelo refinamento**
+
+> *"Ambos devem ser hospedados na AWS Lambda; Kubernetes faz mais sentido para o librarian (disponibilidade contínua)."* A análise abaixo fica registrada porque explica **por que Lambda funciona** e qual é a condição em que ela deixaria de funcionar — não para reabrir a escolha.
 
 O número que dita esta dimensão: **o teto de execução de uma Lambda é 900 s (15 min)**, memória até 10.240 MB (1 vCPU a 1.769 MB), `/tmp` de 512 MB a 10.240 MB, imagem de container até 10 GB, payload síncrono 6 MB / assíncrono 1 MB.
 
@@ -281,6 +307,15 @@ O fix agent é o oposto: 600 s de timeout, mais `git clone`, `git worktree`, exe
 | **A3 — Híbrido: Lambda detecta/investiga, GitHub Actions corrige** | Investigação onde o limite não aperta; **o fix agent roda sem reescrita nenhuma** — `claude -p` com Node, `git` e `gh` nativos e 6 h de limite; N1 vira fronteira de plataforma, não flag | Duas plataformas para operar e depurar; a correção depende da disponibilidade do Actions | O gasto de LLM em Actions não aparece no orçamento da AWS | Baixo | Alta | Registrar custo no mesmo store; um relatório de custo, duas origens | — |
 | | | | Runner do Actions expõe o token de instalação a um agente que executa código arbitrário do repo-alvo | Alto | Média | GitHub App com permissão mínima, escopo por repo, token de vida curta, proibição de push em `main` já no prompt e por branch protection | Revogar a instalação; branch protection barra o estrago |
 | **A4 — Lambda MicroVM** | Até **8 h** de execução por MicroVM, baseada em imagem — investigação e correção caberiam no mesmo runtime | Zero precedente na Medprev; ARM64; superfície nova para operar e para revisar | Aposta em serviço sem uso interno prévio, num projeto de uma pessoa | Alto | Alta | — | Cair para A3, que resolve o mesmo problema com peças conhecidas |
+
+### Dimensão E — O que dispara uma rodada
+
+| Alternativa | Prós | Contras | Risco | Impacto | Probab. | Mitigação | Contingência |
+|---|---|---|---|---|---|---|---|
+| **E1 — Webhook do Datadog** (o do refinamento) | Um achado por evento: o fan-out vira natural e o teto de 900 s sai do caminho crítico; latência de minutos em vez de um dia; sem invocação vazia | Cobre bem a fonte `monitor`; Error Tracking e Kubernetes só chegam por webhook se alguém criar monitores para eles — o que empurra regra de detecção para dentro da configuração do Datadog | Endpoint público recebe evento forjado e paga investigação | Alto | Média | Segredo em header custom do webhook, validado antes de qualquer chamada de modelo; teto diário de gasto | Rotacionar o segredo; desligar a rota |
+| | | | Uma tempestade de alertas dispara dezenas de investigações pagas | Alto | Média | Teto diário no `cap()` reaproveitado como controle de gasto; dedup por fingerprint corta a repetição | Alarme de gasto e desligamento da rota |
+| **E2 — Varredura agendada** (o que a PoC faz) | Cobre as três fontes sem depender de configuração no Datadog; o `cap()` funciona como foi desenhado | Latência de um dia; lote não cabe em Lambda sem fan-out; invoca mesmo quando não há nada | Achado urgente espera a próxima rodada | Médio | Alta | Cadência mais curta | — |
+| **E3 — Os dois** (recomendado) | Webhook onde o Datadog empurra, varredura onde ele não empurra; nenhuma fonte perde cobertura | Dois caminhos de entrada para testar e observar | Um achado entra pelos dois caminhos e é investigado duas vezes | Médio | Alta | O fingerprint é o mesmo nos dois caminhos, e a reserva condicional resolve na primeira escrita | Reconciliação por custo duplicado |
 
 ### Dimensão B — Como o agente alcança o modelo
 
@@ -318,30 +353,38 @@ Estilo: **autocrático** — a decisão é minha, revisada pelo tech lead.
 
 | Dimensão | Decisão | Razão de uma linha |
 |---|---|---|
-| Repositório | **Repo próprio** `medprev-houston-agent`, convenções do librarian | Ciclo de release independente; o librarian é referência de método, não de deploy (§1.4) |
+| Repositório | **Repo próprio** `medprev-houston-agent`, convenções do librarian | O refinamento define o librarian como ferramental, e os agentes como projetos separados que o consomem (§1.4) |
+| Plataforma | **AWS Lambda** | Decidido no refinamento; o teto de 900 s cabe na duração medida (87–148 s) |
+| Gatilho | **E3 — webhook do Datadog + varredura agendada** | O webhook é o que o refinamento pede e resolve `monitor`; a varredura cobre Error Tracking e Kubernetes, que não têm push equivalente |
 | Escopo v1 | **Ciclo completo**, incluindo o fix agent | É o que a PoC já provou de ponta a ponta (3 PRs) |
-| Modelo | **B1 — Bedrock + ferramentas próprias sobre a REST do Datadog** | Único caminho que mantém a restrição do ADR-0001 e é compatível com Bedrock (conector MCP é `No` lá) |
+| Modelo | **B1 — Bedrock + ferramentas atrás da porta de F9** | Único caminho compatível com Bedrock (conector MCP é `No` lá) e que mantém a restrição do ADR-0001; a porta é o que permite trocar a REST própria pela fachada do librarian depois |
 | Estado | **C1 — DynamoDB, quarentena em S3/KMS** | Escrita condicional é o que torna o fan-out seguro |
 | Fix agent | **D1 — GitHub Actions** | Roda o código atual sem reescrita e põe a separação de poder numa fronteira de plataforma |
 | Layout | Hexagonal `run → app ← infra`, portas segregadas | Torna N1 propriedade da composição, não de uma flag |
 | Identidade | Role AWS para o modelo; GitHub App para escrita | Precedente do librarian (ADR-0018); sem credencial pessoal |
 
-### 5.2 Em aberto, por decisão sua
+### 5.2 Onde eu discordo do refinamento, e por quê
 
-**Dimensão A — runtime da investigação.** Recomendação: **A3 (híbrido)**, que combina A1 para investigação com D1 para correção. É a opção que respeita o teto medido, usa o padrão de Lambda que a casa já opera, e não pede reescrita do fix agent.
+O refinamento diz *"ambos devem ser hospedados na AWS Lambda"*, e para detecção e investigação isso fecha sem atrito. **Para o fix agent eu recomendaria o contrário**, e coloco o argumento aqui em vez de decidir sozinha.
 
-A objeção mais forte a essa recomendação, dita por inteiro: **A3 divide um sistema pequeno entre duas plataformas.** Para um serviço mantido por uma pessoa, isso dobra os lugares onde depurar, e o custo de LLM passa a aparecer em dois relatórios. A2 (EKS) resolve tudo num lugar só, com o cluster que a casa já tem.
+O fix agent precisa de `git`, `gh`, Node e o binário `claude`, mais espaço para clonar um repo e rodar a suíte dele, dentro de 900 s. Em Lambda isso significa uma imagem de container carregando esses runtimes e um `/tmp` dimensionado — e o `medprev-rest-api` clonado com testes rodando é o tipo de coisa que encosta nos 900 s. No GitHub Actions esse mesmo agente roda **sem uma linha de mudança**: o ambiente já tem tudo, o limite é de 6 h, e o token de escrita nunca precisa entrar na AWS.
 
-O que faria eu mudar de recomendação: se a Medprev já tiver um CronJob de agente no EKS com imagem pronta, A2 passa na frente — o argumento de "duas plataformas" some e o teto de tempo deixa de existir. **Vale a pena checar antes de fechar.**
+Há um ganho de segurança junto: com o fix agent no Actions, N1 deixa de ser uma flag `--disallowedTools` e passa a ser uma fronteira de plataforma. **O processo que lê produção não tem token do GitHub; o processo que escreve código não tem chave do Datadog.**
+
+O que pesa do outro lado, e é real: duas plataformas para operar e depurar, num serviço mantido por uma pessoa, e o custo de LLM aparecendo em dois relatórios. Se a preferência for plataforma única, D2 (Lambda de container) é viável — a mitigação é `/tmp` em 10 GB e aceitar que repositório grande com suíte lenta vai estourar às vezes, caindo em `incomplete` e sendo reexecutado, que é o comportamento que o código já tem.
+
+**A decisão é sua.** O roadmap (§7) só depende dela na Fase 4.
 
 ### 5.3 O que precisa de medição antes de virar código
 
 Duas incertezas que nenhum documento resolve — só experimento:
 
 1. **A qualidade da investigação sem MCP.** Rodar os 9 achados já investigados através de B1 e comparar os relatórios com os que estão em `reports/`. Critério: a causa raiz e a evidência se mantêm em pelo menos 7 dos 9. Custo do experimento: ~US$ 3 em modelo.
-2. **O custo real no Bedrock.** Os US$ 0,3281 medidos vêm do envelope do Claude Code, e a contabilidade de token daqueles relatórios é sabidamente incompleta — há registro de investigação de US$ 0,35 com `input_tokens: 12`. Não dá para derivar o preço no Bedrock a partir deles. O piloto acima já produz o número.
+2. **O custo real no Bedrock.** Os US$ 0,3281 medidos vêm do envelope do Claude Code, e a contabilidade de token daqueles relatórios é sabidamente incompleta — há registro de investigação de US$ 0,35 com `input_tokens: 12`. O refinamento traz a forma real do consumo: **14k tokens de entrada, 11k de saída por rodada**. Isso reconcilia: a esse volume, ao preço de tabela da API primária para Opus 5 (US$ 5/M entrada, US$ 25/M saída), a conta dá **US$ 0,345** — contra US$ 0,3281 medidos. A forma do consumo está entendida.
 
-Enquanto esses dois não rodarem, qualquer projeção de custo mensal é chute. Com 5 achados/dia ao custo medido hoje, a ordem de grandeza é **~US$ 50/mês em modelo**, e o compute serverless é centavos ao lado disso — mas a base precisa ser refeita no Bedrock.
+   Duas ressalvas que impedem transformar isso em orçamento: **o Bedrock tem preço próprio**, operado pela AWS e diferente da tabela primária; e a escolha de modelo é uma alavanca grande — o mesmo volume em Sonnet 5 (US$ 2/M e US$ 10/M) daria **US$ 0,138**, 2,5× mais barato. Se a qualidade da investigação se sustenta em Sonnet é pergunta para o piloto, não para este documento.
+
+Com 5 achados/dia ao custo medido hoje, a ordem de grandeza é **~US$ 50/mês em modelo**, e o compute serverless é centavos ao lado disso. Em Sonnet, ~US$ 21/mês. Ambos os números pressupõem preço de API primária e precisam ser refeitos no Bedrock antes de virar orçamento.
 
 ---
 
@@ -366,24 +409,26 @@ Fatiado para que o primeiro corte seja medido e de risco zero, e o que depende d
 | **0 — Fundação** | Repo novo, layout `app`/`infra`/`run`, código atual movido sem mudar comportamento, contrato de import-linter, suíte verde | Zero — nada roda na nuvem | A mesma suíte passa; `houston run` local produz o mesmo resultado |
 | **1 — Piloto do modelo** | Ferramentas próprias sobre a REST do Datadog; os 9 achados reinvestigados via Bedrock e comparados | Baixo — só custo de modelo (~US$ 3) | 7 de 9 relatórios mantêm causa raiz e evidência; custo real no Bedrock medido |
 | **2 — Estado durável** | `ReportStore` em DynamoDB + quarentena em S3/KMS; Terraform rodando em LocalStack; migração dos 152 relatórios | Baixo — ainda local | Reexecução a frio não reinvestiga nada; `metrics` reproduz os números da §1.2 |
-| **3 — Rodada agendada** | Coleta e investigação na AWS, fan-out, agendamento, segredos, log estruturado, alarmes | Médio — primeiro dinheiro em produção | Uma rodada diária roda 7 dias sem intervenção; custo dentro do teto |
-| **4 — Correção na nuvem** | GitHub App, workflow de correção, custo do fix registrado | Médio-alto — escreve em repo de produção | Um PR aberto pelo workflow, revisado e mergeado pelo squad dono |
+| **3 — Houston na AWS** | Lambda de investigação, webhook do Datadog com segredo validado, varredura agendada, segredos, log estruturado, alarmes | Médio — primeiro dinheiro em produção | Um alerta do Datadog vira relatório sem intervenção; 7 dias seguidos dentro do teto de gasto |
+| **4 — Correção na nuvem** | GitHub App, o fix agent no runtime decidido em §8.1, custo do fix registrado | Médio-alto — escreve em repo de produção | Um PR aberto pelo workflow, revisado e mergeado pelo squad dono |
 | **5 — Fechar o laço humano** | Decisão por label na issue reconciliada para o store; painel de métricas | Baixo | FP rate e fix rate saem do store sem edição manual |
 
 ---
 
-## 8. O que preciso confirmar antes de fechar
+## 8. O que ainda está aberto
 
-1. **A nota do Granola.** Não é acessível sem login — só o título voltou ("AI agents architecture — library, monitoring, and QA testing"). Se o refinamento com o tech lead decidiu que biblioteca, monitoramento e QA compartilham uma plataforma, a decisão de "repo próprio" da §5.1 muda, e este documento precisa ser revisado. **Colar o conteúdo resolve.**
-2. **Bedrock na conta:** quais modelos Claude estão habilitados, em qual região. De auditoria de custo anterior — **não reverificado nesta sessão** — a Medprev consome Bedrock majoritariamente em `us-east-1`, com volume dirigido por pessoas e não por aplicação. Isso é diferente de ter o modelo certo habilitado para um serviço.
-3. **Existe CronJob de agente no EKS?** Se sim, a dimensão A pode fechar em A2 em vez de A3.
-4. **GitHub App:** quem cria e instala o app nos repos-alvo, e em quais repos.
-5. **Destino do repo:** fica em `carlacurymed` ou transfere para a organização `Medprev`? Isso muda o Pages, o Actions e o IaC.
+Resolvido pelo refinamento: escopo do librarian, plataforma dos agentes, gatilho por webhook e a forma do custo por rodada. O que resta:
 
----
+1. **O fix agent roda em Lambda ou no GitHub Actions?** Único ponto onde recomendo diferente do refinamento — argumento inteiro em §5.2. Trava a Fase 4, não as anteriores.
+2. **Bedrock na conta:** quais modelos Claude estão habilitados e em qual região. De auditoria de custo anterior — **não reverificada nesta sessão** — a Medprev consome Bedrock majoritariamente em `us-east-1`, com volume dirigido por pessoas e não por aplicação. Ter consumo não é ter o modelo certo habilitado para um serviço.
+3. **O conector Datadog do librarian:** quem constrói e quando. Não bloqueia — a porta de F9 existe exatamente para isso — mas define se o Houston mantém a REST própria por seis meses ou por seis semanas.
+4. **GitHub App:** quem cria e instala nos repos-alvo, e em quais repos.
+5. **Destino do repo:** fica em `carlacurymed` ou nasce dentro da organização `Medprev`? Muda Actions, IaC e quem consegue revisar o PR do próprio agente.
+6. **Sonnet ou Opus na investigação.** Diferença de 2,5× no custo (§5.3). Decidido pelo piloto da Fase 1, não por preferência.
 
 ## 9. Histórico de versões
 
 | Versão | Data | Autora | Mudança |
 |---|---|---|---|
-| 0.1 | 2026-09-04 | Carla Cury | Primeira versão. Runtime da investigação em aberto (§5.2); nota do Granola não incorporada (§8). |
+| 0.1 | 2026-09-04 | Carla Cury | Primeira versão. Runtime em aberto; refinamento com o tech lead não incorporado. |
+| 0.2 | 2026-09-04 | Carla Cury | Refinamento incorporado. Fecha plataforma (Lambda) e gatilho (webhook + varredura); define a fronteira librarian↔Houston (§1.4) e a porta de acesso ao Datadog (F9); reconcilia o custo com os 14k/11k tokens. Resta o runtime do fix agent (§5.2). |
