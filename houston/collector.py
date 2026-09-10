@@ -21,7 +21,7 @@ from houston.fingerprint import (
     k8s_fingerprint,
     monitor_fingerprint,
 )
-from houston.models import Finding
+from houston.models import EvidenceLink, Finding
 
 _REASON_RE = re.compile(r"\*\*(\w+)\*\*")
 _MONITOR_ID_RE = re.compile(r"/monitors/(\d+)")
@@ -110,6 +110,9 @@ def collect_error_tracking_findings(
                     datadog_url=url,
                     window_from_ms=window.from_ms,
                     window_to_ms=window.to_ms,
+                    evidence_links=(
+                        EvidenceLink("Issue no Error Tracking", url, query),
+                    ),
                 )
             )
             continue
@@ -134,6 +137,9 @@ def collect_error_tracking_findings(
                 datadog_url=url,
                 window_from_ms=window.from_ms,
                 window_to_ms=window.to_ms,
+                evidence_links=(
+                    EvidenceLink("Issue no Error Tracking", url, query),
+                ),
             )
         )
     return findings
@@ -200,6 +206,7 @@ def collect_kubernetes_findings(
             query, sample["namespace"], sample["reason"]
         )
         stamps = seen_ms.get(fp) or []
+        k8s_url = event_explorer_url(client.site, scoped_query, window)
         findings.append(Finding(
             fingerprint=fp,
             source="kubernetes",
@@ -215,9 +222,15 @@ def collect_kubernetes_findings(
             severity="medium",
             regressed=False,
             raw=sample,
-            datadog_url=event_explorer_url(client.site, scoped_query, window),
+            datadog_url=k8s_url,
             window_from_ms=window.from_ms,
             window_to_ms=window.to_ms,
+            evidence_links=(
+                EvidenceLink(
+                    "Events Explorer (namespace + Reason, janela fixada)",
+                    k8s_url, scoped_query,
+                ),
+            ),
         ))
     return findings
 
@@ -242,6 +255,17 @@ def monitor_evidence_query(query: str, monitor_id: str) -> str:
     while the bare tag form `monitor_id:229652398` returns zero — the
     nested attribute path is the one that works."""
     return f"{query} @monitor.id:{monitor_id}"
+
+
+def monitor_timeline_query(monitor_id: str) -> str:
+    """Unlike `monitor_evidence_query`, this one drops the collector's own
+    `status:error OR status:warn` filter -- that filter is what makes the
+    collector see triggers and miss `[Recovered]` events (status: "ok" or a
+    warning-status recovery, see `_RECOVERY_TITLE_RE`), but the report's
+    step-by-step timeline needs the full Triggered/Re-Triggered/Recovered
+    cycle. Same `@monitor.id:` attribute path verified live for
+    `monitor_evidence_query` above (ADR-0014)."""
+    return f"source:alert @monitor.id:{monitor_id}"
 
 
 def collect_monitor_findings(
@@ -313,21 +337,34 @@ def collect_monitor_findings(
     for fp, count in counts.items():
         sample = sample_by_fp[fp]
         stamps = seen_ms.get(fp) or []
+        monitor_id = sample["monitor_id"]
+        monitor_status_url = monitor_url(client.site, monitor_id)
+        timeline_url = event_explorer_url(
+            client.site, monitor_timeline_query(monitor_id), window
+        )
         findings.append(Finding(
             fingerprint=fp,
             source="monitor",
-            query=monitor_evidence_query(query, sample["monitor_id"]),
+            query=monitor_evidence_query(query, monitor_id),
             service=sample["team"],
-            reason=sample["name"] or f"monitor {sample['monitor_id']}",
+            reason=sample["name"] or f"monitor {monitor_id}",
             first_seen_ms=min(stamps) if stamps else None,
             last_seen_ms=max(stamps) if stamps else None,
             observed_count=count,
             severity=monitor_severity(sample["priority_tag"], sample["status"]),
             regressed=False,
             raw=sample,
-            datadog_url=monitor_url(client.site, sample["monitor_id"]),
+            datadog_url=monitor_status_url,
             window_from_ms=window.from_ms,
             window_to_ms=window.to_ms,
+            evidence_links=(
+                EvidenceLink("Página do monitor", monitor_status_url),
+                EvidenceLink(
+                    "Eventos do monitor na janela "
+                    "(Triggered/Re-Triggered/Recovered)",
+                    timeline_url, monitor_timeline_query(monitor_id),
+                ),
+            ),
         ))
     return findings
 

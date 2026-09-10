@@ -10,6 +10,7 @@ from houston.collector import (
     kubernetes_evidence_query,
     monitor_evidence_query,
     monitor_severity,
+    monitor_timeline_query,
 )
 from houston.config import Config
 from houston.datadog_client import DatadogClient, Window
@@ -276,3 +277,51 @@ def test_evidence_queries_scope_to_one_finding():
     # the parsed-reason fallback is our own placeholder, not a Datadog term
     assert kubernetes_evidence_query("q", "ns", "UnknownReason") == "q kube_namespace:ns"
     assert monitor_evidence_query("source:alert", "42") == "source:alert @monitor.id:42"
+
+
+def test_monitor_timeline_query_drops_the_status_filter():
+    """Unlike monitor_evidence_query, the timeline query must not exclude
+    [Recovered] events -- the report's step-by-step timeline needs the
+    whole Triggered/Re-Triggered/Recovered cycle."""
+    assert monitor_timeline_query("42") == "source:alert @monitor.id:42"
+    assert "status:" not in monitor_timeline_query("42")
+
+
+@patch("houston.datadog_client.requests.post", side_effect=_fake_post_monitor_events)
+def test_monitor_findings_carry_two_evidence_links(mock_post):
+    config = Config(dd_api_key="fake", dd_app_key="fake", dd_site="datadoghq.com")
+    client = DatadogClient(config)
+    findings = collect_monitor_findings(client, Window.last(96))
+
+    sqs_finding = next(f for f in findings if f.fingerprint == "mon-229652398")
+    assert len(sqs_finding.evidence_links) == 2
+    assert sqs_finding.evidence_links[0].url == sqs_finding.datadog_url
+    timeline_link = sqs_finding.evidence_links[1]
+    assert "status" not in (timeline_link.query or "")
+    assert "@monitor.id:229652398" in timeline_link.query
+    assert "from_ts=" in timeline_link.url and "to_ts=" in timeline_link.url
+
+
+@patch("houston.datadog_client.requests.get", side_effect=_fake_get)
+@patch("houston.datadog_client.requests.post", side_effect=_fake_post)
+def test_error_tracking_findings_carry_one_evidence_link(mock_post, mock_get):
+    config = Config(dd_api_key="fake", dd_app_key="fake", dd_site="datadoghq.com")
+    client = DatadogClient(config)
+    findings = collect_error_tracking_findings(
+        client, Window.last(96), should_enrich=lambda fp: True,
+    )
+    for finding in findings:
+        assert len(finding.evidence_links) == 1
+        assert finding.evidence_links[0].url == finding.datadog_url
+
+
+@patch("houston.datadog_client.requests.post", side_effect=_fake_post_k8s_events)
+def test_kubernetes_findings_carry_one_evidence_link(mock_post):
+    config = Config(dd_api_key="fake", dd_app_key="fake", dd_site="datadoghq.com")
+    client = DatadogClient(config)
+    findings = collect_kubernetes_findings(client, Window.last(96))
+
+    for finding in findings:
+        assert len(finding.evidence_links) == 1
+        assert finding.evidence_links[0].url == finding.datadog_url
+        assert finding.evidence_links[0].query == finding.query

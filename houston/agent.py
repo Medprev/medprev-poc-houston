@@ -12,10 +12,11 @@ the envelope a *failed* run still prints on stdout — see ADR-0013.
 import json
 import os
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from houston.models import Finding
+from houston.timestamps import canonicalize, format_ms
 
 ROOT = Path(__file__).resolve().parent.parent
 ALLOWLIST_PATH = ROOT / "houston" / "allowedtools.txt"
@@ -24,50 +25,109 @@ DEFAULT_MAX_BUDGET_USD = "0.50"
 DEFAULT_TIMEOUT_S = 300
 
 PROMPT = """Você está investigando um achado de observabilidade do Datadog. \
-Você tem ferramentas de leitura para buscar mais contexto (logs, spans, issues \
-relacionadas) se for útil — não precisa usá-las se o achado já estiver claro. \
-Não chute evidência que você não consultou de verdade.
+Você tem ferramentas de leitura para buscar mais contexto (logs, spans, eventos, issues \
+relacionadas) — USE-AS para reconstruir o que aconteceu dentro da janela, não apenas \
+para confirmar o que já veio no achado. Não chute evidência que você não consultou de \
+verdade.
 
-O achado já vem com um link direto para o Datadog (`datadog_url` no JSON) — \
-não construa nem invente outro link; se quiser referenciar onde conferir a \
-evidência, use esse mesmo link ou a consulta (`query`) que acompanha o achado.
+O achado já vem com links diretos para o Datadog em `evidence_links` (cada um com \
+`label`, `url` e, quando existir, `query`) e o link legado `datadog_url` — NUNCA \
+construa, monte ou invente uma URL do Datadog; use sempre um desses links prontos, ou \
+cite a `query` exata que você rodou.
+
+REGRA DE TEMPO — leia com atenção, é a parte mais importante deste achado, e um erro de \
+data aqui é inaceitável:
+- Para as datas do PRÓPRIO achado, use exatamente as strings já formatadas que vêm no \
+JSON: `window_from`, `window_to`, `first_seen`, `last_seen`. Copie-as literalmente — \
+NUNCA calcule, converta ou aproxime uma data a partir de `window_from_ms`, `first_seen_ms` \
+etc. (esses campos `_ms` existem só para referência de escopo, não para você formatar).
+- Para qualquer timestamp que você ENCONTRAR usando as ferramentas de leitura (evento, \
+log, span, versão de deploy), escreva-o literalmente dentro de um marcador \
+`{{ts:<valor exatamente como a ferramenta retornou>}}` — por exemplo `{{ts:1788708797000}}` \
+ou `{{ts:2026-09-06T15:33:17Z}}`. O código renderiza esse marcador na hora certa depois; \
+você nunca escreve a data por extenso com a mão.
+- Se não conseguir um timestamp exato para algo, diga isso explicitamente em vez de \
+estimar ("não foi possível determinar o horário exato de X").
 
 Leia os campos de contagem com cuidado, porque eles têm escopos diferentes:
-- `observed_count` é a contagem DENTRO da janela de coleta, delimitada por \
-`window_from_ms` e `window_to_ms`. Não é total acumulado, e pode cair de uma \
-rodada para a outra. Sempre que citar esse número, diga a janela: \
-"N ocorrências entre <window_from_ms> e <window_to_ms>".
-- `first_seen_ms` e `last_seen_ms` são do histórico completo do achado, \
-não da janela. Nunca combine `observed_count` com `first_seen_ms` numa frase \
-como "N ocorrências desde <first_seen_ms>" — são escopos diferentes e a frase \
-fica falsa.
-- Se a sua própria consulta ao Datadog devolver um total diferente de \
-`observed_count`, a explicação mais provável é a diferença de janela; diga \
-qual janela cada número usa em vez de tratar a divergência como inexplicada.
+- `observed_count` é a contagem DENTRO da janela de coleta (`window_from`–`window_to`). \
+Não é total acumulado, e pode cair de uma rodada para a outra. Sempre que citar esse \
+número, diga a janela: "N ocorrências entre <window_from> e <window_to>".
+- `first_seen`/`last_seen` são do histórico completo do achado, não da janela. Nunca \
+combine `observed_count` com `first_seen` numa frase como "N ocorrências desde \
+<first_seen>" — são escopos diferentes e a frase fica falsa.
+- Se a sua própria consulta ao Datadog devolver um total diferente de `observed_count`, \
+a explicação mais provável é a diferença de janela; diga qual janela cada número usa em \
+vez de tratar a divergência como inexplicada.
+
+`target_repo` no JSON é o repositório de código do serviço afetado (ou `null` para \
+componentes de infraestrutura sem repositório próprio) — é para onde a ação recomendada \
+deve apontar.
 
 Responda em português, com esta estrutura exata:
 
 ## Causa raiz
 Um parágrafo, em linguagem direta: qual é o serviço, o que está acontecendo e desde quando.
+Se a causa não estiver confirmada pelas evidências consultadas, diga isso explicitamente
+em vez de apresentar uma hipótese como certeza.
 
 ## Linha do tempo
-Lista curta com as datas/versões relevantes (primeira ocorrência, última ocorrência, \
-regressão se houver) — extraia dos campos do achado, não invente datas. Se um campo \
-de data vier nulo, escreva que o achado não carrega essa data em vez de estimá-la.
+Lista ordenada, cronológica, PASSO A PASSO dos eventos DENTRO da janela de coleta — não \
+apenas primeira/última ocorrência. Consulte as ferramentas de leitura com a `query` de \
+`evidence_links` (monitor: cada evento Triggered/Re-Triggered/Recovered; kubernetes: cada \
+evento do Reason; error tracking: ocorrências e mudanças de versão) e liste cada um, \
+com o marcador `{{ts:...}}` primeiro, seguido do que aconteceu e do link/consulta que \
+prova aquele item. Se a ferramenta não devolveu eventos suficientes para um passo a \
+passo, diga isso e liste o que os campos do achado garantem (`window_from`, `window_to`, \
+`first_seen`, `last_seen`).
 
 ## Evidência
-Lista com marcadores, cada um uma afirmação seguida da consulta ou chamada de ferramenta \
-exata que a sustenta. Nunca cole linha de log ou dado de usuário — referencie onde \
-encontrar, não o conteúdo em si.
+Lista com marcadores, cada um uma afirmação seguida do link de `evidence_links`/`datadog_url` \
+que a sustenta, ou — se não houver link para aquele dado específico — a consulta ou \
+chamada de ferramenta exata. Nunca cole linha de log ou dado de usuário — referencie onde \
+encontrar, não o conteúdo em si. Nunca construa uma URL: use as que vieram prontas.
 
 ## Ação recomendada
-Uma ou duas frases.
+Uma ou duas frases com a ação objetiva.
 
 ## Corpo da issue
-Um corpo de issue do GitHub pronto para colar, em formato 5W2H \
-(O quê/Por quê/Onde/Quando/Quem/Como/Quanto), com menos de 50 linhas. Escreva o \
-corpo direto, sem envolver a seção em bloco de código (```) — ele é colado como \
-markdown de issue, não como código.
+A ÚLTIMA seção do relatório — não escreva nada depois dela. É o texto que vira uma issue \
+do GitHub e que um segundo agente de correção vai ler para consertar o código sozinho, \
+então tem que ser específico o bastante para isso. Não abra a seção com um bloco de \
+código (```). Até ~120 linhas. Use exatamente estas subseções, cada uma com `###`:
+
+### Descrição do incidente
+Descrição objetiva e clara: o que está acontecendo, em qual serviço, desde quando, e \
+qual o impacto observável (para o usuário ou para o sistema).
+
+### Causa raiz
+A mesma conclusão da seção `## Causa raiz` acima, resumida; diga "não determinada" se for \
+o caso, sem inventar uma causa para preencher a seção.
+
+### Linha do tempo
+A mesma lista passo a passo de `## Linha do tempo`, incluindo correlações relevantes \
+(deploy/versão, mudanças de estado do monitor, eventos relacionados de outros achados se \
+você os encontrou).
+
+### Evidências
+Os mesmos links/consultas de `## Evidência`, como lista pronta para o leitor clicar.
+
+### Ação recomendada
+Ação concreta e específica o bastante para outro agente executar sem precisar investigar \
+de novo: nomeie o repositório (`target_repo`, ou "infra — sem repositório de código, ação \
+operacional" se `target_repo` for nulo), o arquivo/função/componente afetado quando \
+identificável, o que exatamente deve mudar, e como validar que a correção resolveu o \
+problema.
+
+### Volume
+`observed_count` com a janela em que foi medido; se você consultou o Datadog e obteve um \
+total diferente (outra janela, outro filtro), inclua também, identificando a janela de \
+cada número.
+
+### Severidade e criticidade
+A `severity` do achado, e uma avaliação de criticidade para o negócio (impacto em \
+usuários, dados ou operação) — se a criticidade for uma inferência sua e não um dado \
+direto do achado, marque isso explicitamente como inferência.
 
 O achado, em JSON, vem a seguir pelo stdin.
 """
@@ -84,6 +144,10 @@ class InvestigationResult:
     error: str | None = None
     cache_read_input_tokens: int = 0
     cache_creation_input_tokens: int = 0
+    # `{{ts:...}}` markers the prompt asked for but couldn't be parsed into
+    # a timestamp -- left visible in `body` verbatim, never silently
+    # dropped or guessed at (see houston/timestamps.py:canonicalize).
+    warnings: list[str] = field(default_factory=list)
 
 
 def _load_allowlist() -> str:
@@ -154,8 +218,14 @@ def _result(
     usage = (payload or {}).get("usage") or {}
     total_input, cache_read, cache_creation = _input_tokens(usage)
     duration_ms = (payload or {}).get("duration_ms")
+    body = None
+    warnings: list[str] = []
+    if state == "new":
+        raw_result = (payload or {}).get("result")
+        if raw_result:
+            body, warnings = canonicalize(raw_result)
     return InvestigationResult(
-        body=(payload or {}).get("result") if state == "new" else None,
+        body=body,
         input_tokens=total_input,
         output_tokens=int(usage.get("output_tokens") or 0),
         duration_s=(duration_ms / 1000) if duration_ms else fallback_duration_s,
@@ -164,6 +234,7 @@ def _result(
         error=error,
         cache_read_input_tokens=cache_read,
         cache_creation_input_tokens=cache_creation,
+        warnings=warnings,
     )
 
 
@@ -171,6 +242,7 @@ def investigate(
     finding: Finding,
     max_budget_usd: str = DEFAULT_MAX_BUDGET_USD,
     timeout_s: int = DEFAULT_TIMEOUT_S,
+    target_repo: str | None = None,
 ) -> InvestigationResult:
     env = {**os.environ}
     env.pop("CLAUDECODE", None)  # allow nesting claude -p inside a session
@@ -194,9 +266,21 @@ def investigate(
         "window_to_ms": finding.window_to_ms,
         "first_seen_ms": finding.first_seen_ms,
         "last_seen_ms": finding.last_seen_ms,
+        # Pre-rendered, code-owned canonical strings -- the model copies
+        # these verbatim and never computes a date itself (see the "REGRA
+        # DE TEMPO" section of PROMPT).
+        "window_from": format_ms(finding.window_from_ms),
+        "window_to": format_ms(finding.window_to_ms),
+        "first_seen": format_ms(finding.first_seen_ms),
+        "last_seen": format_ms(finding.last_seen_ms),
         "severity": finding.severity,
         "regressed": finding.regressed,
         "datadog_url": finding.datadog_url,
+        "evidence_links": [
+            {"label": link.label, "url": link.url, "query": link.query}
+            for link in finding.evidence_links
+        ],
+        "target_repo": target_repo,
         "raw": finding.raw,
     })
 

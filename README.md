@@ -39,13 +39,13 @@ O pipeline tem duas fases de agente e três decisões humanas:
 
 2. **Dedup + Cap** — achados já reportados são ignorados. O resto é priorizado por severidade, depois round-robin entre fontes, depois volume. Top N selecionados (default 5).
 
-3. **Investigar** — `houston investigate` roda um `claude -p` por achado, com ferramentas de leitura do Datadog (MCP). Sem acesso de escrita ao disco — o agente só lê. Produz: causa raiz, linha do tempo, evidência com queries exatas, ação recomendada, corpo de issue pronto.
+3. **Investigar** — `houston investigate` roda um `claude -p` por achado, com ferramentas de leitura do Datadog (MCP). Sem acesso de escrita ao disco — o agente só lê. Produz: causa raiz, linha do tempo passo a passo (cada evento com hora exata e link/query de evidência), evidência com links do Datadog prontos, ação recomendada, e um corpo de issue pronto para o agente de correção consumir (descrição, causa raiz, linha do tempo com correlações, evidências, ação por repositório, volume, severidade e criticidade). Todo timestamp é renderizado em código — hora primeiro, epoch e ISO-8601 sempre juntos — nunca calculado pelo modelo.
 
 4. **PII Gate** — o relatório renderizado (front-matter + corpo) passa por validação de CPF, CNPJ, email, telefone BR e PAN antes de ser gravado. Um hit redireciona para quarentena.
 
 5. **Decisão humana** — o humano lê o relatório e marca `state: promoted` (bug real, vira issue) ou `state: discarded` (ruído). Essa decisão é o que mede a taxa de falso positivo.
 
-6. **Promover** — `houston promote <fingerprint>` gera o comando `gh issue create` com o corpo 5W2H. O humano executa e cola a URL da issue no front-matter do report.
+6. **Promover** — `houston promote <fingerprint>` gera o comando `gh issue create` com o corpo da issue e a label `AIOPS` (toda issue aberta pelo agente carrega essa label, para dar para filtrar). O humano executa e cola a URL da issue no front-matter do report.
 
 7. **Corrigir** — `houston fix <fingerprint>` roda um segundo `claude -p`, agora com ferramentas de código (Bash, Read, Write, Edit), contra o repo do serviço afetado via git worktree. O agente lê o relatório, navega o codebase, escreve a correção, tenta rodar testes, e abre um PR linkado à issue.
 
