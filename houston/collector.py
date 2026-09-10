@@ -73,6 +73,17 @@ def _regressed_in_window(attrs: dict, window: Window) -> bool:
     return window.from_ms <= regressed_at <= window.to_ms
 
 
+# A human's own triage in Datadog, and the only field in this pipeline that
+# records a decision a person already made. `state` exists on the detail
+# response, never on the search result (ADR-0007), so reading it costs no
+# extra call -- the detail step already runs for every finding that could
+# still be investigated. Observed live over one 96h window of
+# `service:medprev-rest-api`: OPEN (100 issues), IGNORED (3),
+# ACKNOWLEDGED (2), EXCLUDED (1). ACKNOWLEDGED means someone picked the
+# issue up, not that they dismissed it, so it stays in the queue (ADR-0026).
+DISMISSED_ISSUE_STATES = frozenset({"IGNORED", "EXCLUDED"})
+
+
 def collect_error_tracking_findings(
     client: DatadogClient,
     window: Window,
@@ -87,7 +98,11 @@ def collect_error_tracking_findings(
     discard — see docs/e0-verification.md and ADR-0020.
 
     A finding that is not enriched carries what the search step returned
-    (fingerprint, volume, deep link) and nothing invented for the rest."""
+    (fingerprint, volume, deep link) and nothing invented for the rest.
+
+    An enriched issue whose `state` a human already dismissed
+    (`DISMISSED_ISSUE_STATES`) is dropped, not returned: investigating it
+    spends real quota re-deciding a question someone answered in Datadog."""
     counts_by_id = client.search_error_tracking_issues(query, window, track=track)
     findings: list[Finding] = []
     for issue_id, total_count in counts_by_id.items():
@@ -118,6 +133,8 @@ def collect_error_tracking_findings(
             continue
         issue = client.get_error_tracking_issue(issue_id)
         attrs = issue["attributes"]
+        if attrs.get("state") in DISMISSED_ISSUE_STATES:
+            continue
         findings.append(
             Finding(
                 fingerprint=fingerprint,

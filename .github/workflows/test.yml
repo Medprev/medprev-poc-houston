@@ -1,0 +1,32 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # mise owns the toolchain, so CI resolves Python from mise.toml
+      # instead of pinning a second version that can drift from it. The
+      # tasks below are the same ones run locally -- CI green means
+      # `mise run lint` and `mise run test` pass, nothing adjacent.
+      - uses: jdx/mise-action@v2
+        with:
+          experimental: true
+
+      - run: mise run setup
+      - run: mise run lint
+      - run: mise run test

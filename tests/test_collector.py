@@ -325,3 +325,69 @@ def test_kubernetes_findings_carry_one_evidence_link(mock_post):
         assert len(finding.evidence_links) == 1
         assert finding.evidence_links[0].url == finding.datadog_url
         assert finding.evidence_links[0].query == finding.query
+
+
+_STATE_FIXTURE_IDS = {
+    "aaaaaaaa-0000-11f1-0000-da7ad0900002": "et_issue_state_ignored.json",
+    "bbbbbbbb-0000-11f1-0000-da7ad0900002": "et_issue_state_excluded.json",
+    "cccccccc-0000-11f1-0000-da7ad0900002": "et_issue_state_acknowledged.json",
+    "114e7438-e897-11ef-83c4-da7ad0900002": "et_issue_114e7438.json",
+}
+
+
+def _fake_search_over_states(url, headers=None, json=None, timeout=None):
+    assert "/issues/search" in url
+    return _FakeResponse({
+        "data": [
+            {"id": issue_id, "attributes": {"total_count": 500}}
+            for issue_id in _STATE_FIXTURE_IDS
+        ]
+    })
+
+
+def _fake_get_by_state(url, headers=None, params=None, timeout=None):
+    for issue_id, fixture in _STATE_FIXTURE_IDS.items():
+        if url.endswith(issue_id):
+            return _FakeResponse(_load(fixture))
+    raise AssertionError(f"unexpected GET {url}")
+
+
+@patch("houston.datadog_client.requests.get", side_effect=_fake_get_by_state)
+@patch("houston.datadog_client.requests.post", side_effect=_fake_search_over_states)
+def test_issues_a_human_dismissed_are_dropped(mock_post, mock_get):
+    """ADR-0026: IGNORED and EXCLUDED are a person's own triage in Datadog.
+    Investigating them re-decides a question someone already answered --
+    three IGNORED issues carried more events than all 100 OPEN ones."""
+    client = DatadogClient(
+        Config(dd_api_key="fake", dd_app_key="fake", dd_site="datadoghq.com")
+    )
+
+    findings = collect_error_tracking_findings(client, Window.last(96))
+
+    kept = {f.fingerprint for f in findings}
+    assert kept == {
+        "et-cccccccc-0000-11f1-0000-da7ad0900002",  # ACKNOWLEDGED: picked up
+        "et-114e7438-e897-11ef-83c4-da7ad0900002",  # OPEN
+    }
+    # The state lives on the detail response, so the filter costs no extra
+    # call -- every candidate is still fetched exactly once (ADR-0007).
+    assert mock_get.call_count == len(_STATE_FIXTURE_IDS)
+    assert mock_post.call_count == 1
+
+
+@patch("houston.datadog_client.requests.get", side_effect=_fake_get_by_state)
+@patch("houston.datadog_client.requests.post", side_effect=_fake_search_over_states)
+def test_dedup_skips_the_detail_call_before_state_can_be_read(mock_post, mock_get):
+    """The state filter runs inside the enrich step, so a finding dedup
+    already excluded never pays for it -- ADR-0020's contract is intact."""
+    client = DatadogClient(
+        Config(dd_api_key="fake", dd_app_key="fake", dd_site="datadoghq.com")
+    )
+
+    findings = collect_error_tracking_findings(
+        client, Window.last(96), should_enrich=lambda _: False,
+    )
+
+    assert mock_get.call_count == 0
+    assert len(findings) == len(_STATE_FIXTURE_IDS)
+    assert {f.reason for f in findings} == {"not enriched"}
