@@ -6,7 +6,9 @@ The investigation agent (agent.py) is read-only. This one is write-enabled
 on the target repo: Bash, Read, Write, Edit, Glob, Grep. It has no
 Datadog tools — the report already contains the evidence.
 
-Bounded by --max-budget-usd and a wall-clock timeout, same as agent.py.
+Bounded by --max-budget-usd and a wall-clock timeout, same as agent.py --
+and, same as agent.py, pins model and effort rather than inheriting the
+operator's interactive selection (ADR-0023).
 """
 import os
 import re
@@ -24,6 +26,13 @@ ROOT = Path(__file__).resolve().parent.parent
 
 DEFAULT_MAX_BUDGET_USD = "3.00"
 DEFAULT_TIMEOUT_S = 600
+
+# Writing a fix is harder than describing one, so this agent gets a higher
+# effort than the investigation agent -- but still pinned, and still sized
+# against the budget above rather than against whatever the operator's
+# session happens to be set to (ADR-0023).
+DEFAULT_MODEL = "sonnet"
+DEFAULT_EFFORT = "high"
 
 ALLOWED_TOOLS = "Bash,Read,Write,Edit,Glob,Grep"
 
@@ -168,6 +177,8 @@ def fix(
     repo_info: dict,
     max_budget_usd: str = DEFAULT_MAX_BUDGET_USD,
     timeout_s: int = DEFAULT_TIMEOUT_S,
+    model: str = DEFAULT_MODEL,
+    effort: str = DEFAULT_EFFORT,
 ) -> FixResult:
     repo_path = Path(repo_info["path"]).expanduser()
     repo_name = repo_info["repo"]
@@ -189,10 +200,13 @@ def fix(
 
     env = {**os.environ}
     env.pop("CLAUDECODE", None)
+    env.pop("CLAUDE_EFFORT", None)  # ADR-0023
 
     cmd = [
         "claude", "-p",
         "--output-format", "json",
+        "--model", model,
+        "--effort", effort,
         "--allowedTools", ALLOWED_TOOLS,
         "--max-budget-usd", max_budget_usd,
         prompt,

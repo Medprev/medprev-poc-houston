@@ -2,6 +2,8 @@
 import argparse
 import sys
 
+from houston.agent import DEFAULT_EFFORT as AGENT_DEFAULT_EFFORT
+from houston.agent import DEFAULT_MODEL as AGENT_DEFAULT_MODEL
 from houston.agent import investigate as agent_investigate
 from houston.collector import collect
 from houston.dedup import (
@@ -12,6 +14,8 @@ from houston.dedup import (
     needs_investigation,
     report_path,
 )
+from houston.fix_agent import DEFAULT_EFFORT as FIX_DEFAULT_EFFORT
+from houston.fix_agent import DEFAULT_MODEL as FIX_DEFAULT_MODEL
 from houston.fix_agent import fix as agent_fix
 from houston.fix_agent import resolve_repo
 from houston.frontmatter import Report, read_report, write_report
@@ -155,8 +159,8 @@ def cmd_investigate(args: argparse.Namespace) -> int:
         return 0
 
     print(f"investigating {len(kept)} of {len(new_findings)} findings needing it "
-          f"({dropped} dropped by cap) -- max ${args.max_budget_usd} each, "
-          f"{args.timeout_s}s timeout each")
+          f"({dropped} dropped by cap) -- {args.model} @ effort {args.effort}, "
+          f"max ${args.max_budget_usd} each, {args.timeout_s}s timeout each")
     total_usd = 0.0
     for i, finding in enumerate(kept, 1):
         print(f"  [{i}/{len(kept)}] {finding.fingerprint} ({finding.service}, "
@@ -164,7 +168,7 @@ def cmd_investigate(args: argparse.Namespace) -> int:
         target_repo = (resolve_repo(finding.service) or {}).get("repo")
         result = agent_investigate(
             finding, max_budget_usd=args.max_budget_usd, timeout_s=args.timeout_s,
-            target_repo=target_repo,
+            target_repo=target_repo, model=args.model, effort=args.effort,
         )
         total_usd += result.usd
         if result.warnings:
@@ -182,6 +186,7 @@ def cmd_investigate(args: argparse.Namespace) -> int:
         report.cost.cache_creation_input_tokens = result.cache_creation_input_tokens
         report.cost.duration_s = result.duration_s
         report.cost.usd = result.usd
+        report.cost.model = result.model
         write_result = write_report(report)
         if write_result.written:
             print(f"${result.usd:.4f}, {result.state}")
@@ -261,6 +266,7 @@ def cmd_fix(args: argparse.Namespace) -> int:
     print(f"fixing {args.fingerprint}")
     print(f"  repo: {repo_info['repo']}  path: {repo_info['path']}")
     print(f"  issue: {issue_url}")
+    print(f"  model: {args.model} @ effort {args.effort}")
     print(f"  budget: ${args.max_budget_usd}  timeout: {args.timeout_s}s")
 
     result = agent_fix(
@@ -270,6 +276,8 @@ def cmd_fix(args: argparse.Namespace) -> int:
         repo_info=repo_info,
         max_budget_usd=args.max_budget_usd,
         timeout_s=args.timeout_s,
+        model=args.model,
+        effort=args.effort,
     )
 
     print(f"  state: {result.state}  cost: ${result.usd:.4f}")
@@ -322,6 +330,11 @@ def main() -> int:
     inv_p.add_argument("--max-findings", type=int, default=5, help="deliberately small default -- override once you trust the cost")
     inv_p.add_argument("--max-budget-usd", default="0.50")
     inv_p.add_argument("--timeout-s", type=int, default=300)
+    inv_p.add_argument("--model", default=AGENT_DEFAULT_MODEL,
+                       help="pinned, never inherited from the operator's Claude Code "
+                            "settings -- raise --max-budget-usd if you move up a tier")
+    inv_p.add_argument("--effort", default=AGENT_DEFAULT_EFFORT,
+                       choices=["low", "medium", "high", "xhigh", "max"])
     inv_p.set_defaults(func=cmd_investigate)
 
     promote_p = sub.add_parser("promote", help="print (never run) a ready gh issue create for a report")
@@ -333,6 +346,10 @@ def main() -> int:
     fix_p.add_argument("--issue", help="GitHub issue URL (reads from front-matter if absent)")
     fix_p.add_argument("--max-budget-usd", default="3.00")
     fix_p.add_argument("--timeout-s", type=int, default=600)
+    fix_p.add_argument("--model", default=FIX_DEFAULT_MODEL,
+                       help="pinned, never inherited from the operator's Claude Code settings")
+    fix_p.add_argument("--effort", default=FIX_DEFAULT_EFFORT,
+                       choices=["low", "medium", "high", "xhigh", "max"])
     fix_p.set_defaults(func=cmd_fix)
 
     args = parser.parse_args()

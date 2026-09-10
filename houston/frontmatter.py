@@ -26,6 +26,12 @@ class Cost:
     usd: float = 0.0
     cache_read_input_tokens: int = 0
     cache_creation_input_tokens: int = 0
+    # Which model was billed. `usd` is meaningless without it: the same
+    # investigation costs 2.5x more per token on Opus than on Sonnet, and
+    # ADR-0023 had to recover the model from price arithmetic because no
+    # report carried it. None only for reports written without an agent
+    # run (seeded).
+    model: str | None = None
 
 
 @dataclass
@@ -94,6 +100,7 @@ class Report:
                 "cache_creation_input_tokens": self.cost.cache_creation_input_tokens,
                 "duration_s": self.cost.duration_s,
                 "usd": self.cost.usd,
+                "model": self.cost.model,
             },
             "issue": self.issue,
             "datadog_url": self.datadog_url,
