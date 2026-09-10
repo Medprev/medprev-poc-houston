@@ -38,9 +38,12 @@ cite a `query` exata que você rodou.
 REGRA DE TEMPO — leia com atenção, é a parte mais importante deste achado, e um erro de \
 data aqui é inaceitável:
 - Para as datas do PRÓPRIO achado, use exatamente as strings já formatadas que vêm no \
-JSON: `window_from`, `window_to`, `first_seen`, `last_seen`. Copie-as literalmente — \
-NUNCA calcule, converta ou aproxime uma data a partir de `window_from_ms`, `first_seen_ms` \
-etc. (esses campos `_ms` existem só para referência de escopo, não para você formatar).
+JSON: `window_from`, `window_to`, `first_seen`, `last_seen`. Copie-as LITERALMENTE, POR \
+INTEIRO, toda vez que citar uma delas — inclusive a parte entre parênteses com o epoch e \
+o ISO-8601. NUNCA corte, resuma ou reescreva a string para citar só a hora/data; se \
+precisar economizar espaço, encurte o texto ao redor, não a data em si. E NUNCA calcule, \
+converta ou aproxime uma data a partir de `window_from_ms`, `first_seen_ms` etc. (esses \
+campos `_ms` existem só para referência de escopo, não para você formatar).
 - Para qualquer timestamp que você ENCONTRAR usando as ferramentas de leitura (evento, \
 log, span, versão de deploy), escreva-o literalmente dentro de um marcador \
 `{{ts:<valor exatamente como a ferramenta retornou>}}` — por exemplo `{{ts:1788708797000}}` \
