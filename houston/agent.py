@@ -6,6 +6,12 @@ Bounded by --max-budget-usd and a wall-clock timeout, not --max-turns —
 see ADR-0006: the turn-count flag the original design assumed does not
 exist in the installed CLI (2.1.251).
 
+Model and effort are pinned on the command line, never inherited from the
+operator's own Claude Code settings -- ADR-0023: an unpinned subprocess
+priced its $0.50 budget against whatever model the operator had last
+selected interactively, and one run of three findings spent $2.41
+producing three `state: incomplete` reports and no investigation.
+
 Cost accounting reads the whole usage envelope, including cache tokens and
 the envelope a *failed* run still prints on stdout — see ADR-0013.
 """
@@ -23,6 +29,14 @@ ALLOWLIST_PATH = ROOT / "houston" / "allowedtools.txt"
 
 DEFAULT_MAX_BUDGET_USD = "0.50"
 DEFAULT_TIMEOUT_S = 300
+
+# The tier that produced every report promoted so far, and the tier the
+# $0.50 budget is sized for (~$0.31/finding at list price on the token
+# profile of a real completed run). Opus costs 2.5x per token and defaults
+# to a higher effort level, which does not fit this cap -- raise
+# --max-budget-usd along with --model if you change this (ADR-0023).
+DEFAULT_MODEL = "sonnet"
+DEFAULT_EFFORT = "medium"
 
 PROMPT = """Você está investigando um achado de observabilidade do Datadog. \
 Você tem ferramentas de leitura para buscar mais contexto (logs, spans, eventos, issues \
@@ -145,6 +159,10 @@ class InvestigationResult:
     usd: float
     state: str  # "new" (investigated) | "incomplete" (failed/timed out)
     error: str | None = None
+    # The model the CLI reports having actually billed, not the alias we
+    # asked for -- diagnosing ADR-0023 required deriving the model from
+    # cost arithmetic because no report recorded it.
+    model: str | None = None
     cache_read_input_tokens: int = 0
     cache_creation_input_tokens: int = 0
     # `{{ts:...}}` markers the prompt asked for but couldn't be parsed into
@@ -174,6 +192,17 @@ def _payload_or_none(stdout: str | bytes | None) -> dict | None:
     except json.JSONDecodeError:
         return None
     return parsed if isinstance(parsed, dict) else None
+
+
+def _billed_model(payload: dict | None, requested: str) -> str:
+    """`modelUsage` is keyed by the resolved model id (e.g.
+    `claude-sonnet-5`), which is what we want on record; a run that died
+    before its first billed request has no envelope, so the alias we asked
+    for is the honest fallback."""
+    model_usage = (payload or {}).get("modelUsage")
+    if isinstance(model_usage, dict) and model_usage:
+        return ",".join(sorted(model_usage))
+    return requested
 
 
 def _input_tokens(usage: dict) -> tuple[int, int, int]:
@@ -217,6 +246,7 @@ def _result(
     state: str,
     error: str | None = None,
     fallback_duration_s: float = 0.0,
+    requested_model: str = DEFAULT_MODEL,
 ) -> InvestigationResult:
     usage = (payload or {}).get("usage") or {}
     total_input, cache_read, cache_creation = _input_tokens(usage)
@@ -238,6 +268,7 @@ def _result(
         cache_read_input_tokens=cache_read,
         cache_creation_input_tokens=cache_creation,
         warnings=warnings,
+        model=_billed_model(payload, requested_model),
     )
 
 
@@ -246,13 +277,20 @@ def investigate(
     max_budget_usd: str = DEFAULT_MAX_BUDGET_USD,
     timeout_s: int = DEFAULT_TIMEOUT_S,
     target_repo: str | None = None,
+    model: str = DEFAULT_MODEL,
+    effort: str = DEFAULT_EFFORT,
 ) -> InvestigationResult:
     env = {**os.environ}
     env.pop("CLAUDECODE", None)  # allow nesting claude -p inside a session
+    # Same reason model and effort are pinned below: an operator's session
+    # must not be able to reprice this run (ADR-0023).
+    env.pop("CLAUDE_EFFORT", None)
 
     cmd = [
         "claude", "-p",
         "--output-format", "json",
+        "--model", model,
+        "--effort", effort,
         "--allowedTools", _load_allowlist(),
         "--disallowedTools", "Bash,Write,Edit",
         "--max-budget-usd", max_budget_usd,
@@ -298,20 +336,24 @@ def investigate(
             partial, "incomplete",
             error=_error_text(partial, "", prefix=f"timed out after {timeout_s}s"),
             fallback_duration_s=float(timeout_s),
+            requested_model=model,
         )
 
     payload = _payload_or_none(proc.stdout)
 
     if proc.returncode != 0:
-        return _result(payload, "incomplete", error=_error_text(payload, proc.stderr))
+        return _result(payload, "incomplete", error=_error_text(payload, proc.stderr),
+                       requested_model=model)
 
     if payload is None:
         return _result(
             None, "incomplete",
             error=f"non-JSON stdout: {proc.stdout[:500]}",
+            requested_model=model,
         )
 
     if payload.get("is_error") or not payload.get("result"):
-        return _result(payload, "incomplete", error=_error_text(payload, proc.stderr))
+        return _result(payload, "incomplete", error=_error_text(payload, proc.stderr),
+                       requested_model=model)
 
-    return _result(payload, "new")
+    return _result(payload, "new", requested_model=model)
