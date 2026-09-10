@@ -241,3 +241,23 @@ def test_report_markdown_passed_as_prompt_context(mock_run, mock_count, mock_pre
     fix("et-test", report_text, "https://github.com/org/repo/issues/1", REPO_INFO)
     prompt = mock_run.call_args.args[0][-1]
     assert "Bug in city.api.mjs" in prompt
+
+
+@patch("houston.fix_agent._cleanup_worktree")
+@patch("houston.fix_agent._prepare_worktree")
+@patch("houston.fix_agent._count_existing_attempts", return_value=0)
+@patch("houston.fix_agent.subprocess.run")
+def test_model_and_effort_are_pinned_not_inherited(mock_run, mock_count, mock_prep, mock_clean):
+    """Same failure mode as the investigation agent (ADR-0023): without
+    `--model`, this run's $3.00 cap is priced against whatever model the
+    operator last selected in their own Claude Code session."""
+    mock_prep.return_value = (Path("/tmp/wt"), "houston/fix/et-test")
+    mock_run.return_value = _fake_completed(GOOD_PAYLOAD)
+    fix("et-test", "report text", "https://github.com/org/repo/issues/1", REPO_INFO)
+    cmd = mock_run.call_args.args[0]
+
+    assert cmd[cmd.index("--model") + 1] == "sonnet"
+    # Writing a fix earns more effort than describing one, but it is still
+    # a value this repo chooses, not one it inherits.
+    assert cmd[cmd.index("--effort") + 1] == "high"
+    assert "CLAUDE_EFFORT" not in mock_run.call_args.kwargs["env"]

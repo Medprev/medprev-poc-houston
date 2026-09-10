@@ -279,3 +279,60 @@ def test_successful_result_extracts_cost_and_tokens(mock_run):
     assert result.output_tokens == 340
     assert result.duration_s == 8.2
     assert result.usd == 0.011
+
+
+@patch("houston.agent.subprocess.run")
+def test_model_and_effort_are_pinned_not_inherited(mock_run):
+    """Measured live (2026-09-10, CLI 2.1.267): the same trivial prompt
+    through the same subprocess shape cost $0.3915 on the operator's
+    inherited default (`claude-opus-5[1m]` @ effort xhigh) and $0.0777 on
+    `--model sonnet` @ medium — 5.0x. Without `--model`, `--max-budget-usd
+    0.50` is priced against a setting this repo does not control, and three
+    real findings died in `error_max_budget_usd` having spent $2.41
+    (ADR-0023)."""
+    mock_run.return_value = _fake_completed(json.dumps(
+        {"result": "ok", "usage": {}, "duration_ms": 10, "total_cost_usd": 0.0}
+    ))
+    investigate(_finding())
+    cmd = mock_run.call_args.args[0]
+
+    assert cmd[cmd.index("--model") + 1] == "sonnet"
+    assert cmd[cmd.index("--effort") + 1] == "medium"
+
+
+@patch("houston.agent.subprocess.run")
+def test_claude_effort_env_var_cannot_reprice_the_run(mock_run):
+    mock_run.return_value = _fake_completed(json.dumps(
+        {"result": "ok", "usage": {}, "duration_ms": 10, "total_cost_usd": 0.0}
+    ))
+    with patch.dict("os.environ", {"CLAUDE_EFFORT": "max"}):
+        investigate(_finding())
+    assert "CLAUDE_EFFORT" not in mock_run.call_args.kwargs["env"]
+
+
+@patch("houston.agent.subprocess.run")
+def test_billed_model_comes_from_the_envelope_not_the_alias(mock_run):
+    """`--model sonnet` is an alias; the report has to record what was
+    actually billed, because `usd` is uninterpretable without it."""
+    mock_run.return_value = _fake_completed(json.dumps(
+        {"result": "ok", "usage": {}, "duration_ms": 10, "total_cost_usd": 0.05,
+         "modelUsage": {"claude-sonnet-5": {"costUSD": 0.05}}}
+    ))
+    result = investigate(_finding())
+    assert result.model == "claude-sonnet-5"
+
+
+@patch("houston.agent.subprocess.run")
+def test_budget_death_before_any_billed_request_falls_back_to_the_alias(mock_run):
+    """One of the three findings in the ADR-0023 run recorded $0.5139 with
+    an all-zero usage block and no `modelUsage` — the run died before the
+    envelope named a model. Recording nothing there would lose the only
+    field that explains the spend."""
+    mock_run.return_value = _fake_completed(
+        json.dumps({"is_error": True, "subtype": "error_max_budget_usd",
+                    "duration_ms": 7523, "total_cost_usd": 0.51388725, "usage": {}}),
+        returncode=1, stderr="",
+    )
+    result = investigate(_finding(), model="opus")
+    assert result.state == "incomplete"
+    assert result.model == "opus"
