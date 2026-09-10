@@ -14,12 +14,13 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-import yaml
-
 from houston.agent import _error_text, _input_tokens, _payload_or_none
+from houston.service_repos import (  # noqa: F401 -- re-exported for callers/tests
+    load_service_repos,
+    resolve_repo,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
-SERVICE_REPOS_PATH = ROOT / "houston" / "service_repos.yaml"
 
 DEFAULT_MAX_BUDGET_USD = "3.00"
 DEFAULT_TIMEOUT_S = 600
@@ -72,21 +73,6 @@ class FixResult:
     branch: str | None = None
     cache_read_input_tokens: int = 0
     cache_creation_input_tokens: int = 0
-
-
-def load_service_repos() -> dict:
-    return yaml.safe_load(SERVICE_REPOS_PATH.read_text()) or {}
-
-
-def resolve_repo(service: str | None, report_body: str = "") -> dict | None:
-    """Two-phase resolution: front-matter service first, then body scan."""
-    mapping = load_service_repos()
-    if service and service in mapping and mapping[service] is not None:
-        return mapping[service]
-    for name, entry in mapping.items():
-        if entry is not None and re.search(rf'\b{re.escape(name)}\b', report_body):
-            return entry
-    return None
 
 
 def _extract_pr_url(text: str) -> str | None:

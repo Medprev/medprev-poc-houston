@@ -1,6 +1,17 @@
 """The one finding shape every source normalizes into."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
+
+
+@dataclass(frozen=True)
+class EvidenceLink:
+    """A Datadog link (or, when no deterministic link shape exists, the
+    exact query) that proves a claim in the investigation. Built by the
+    collector, never by the investigating model -- same rule ADR-0011
+    already applies to `Finding.datadog_url`."""
+    label: str
+    url: str
+    query: str | None = None
 
 
 @dataclass(frozen=True)
@@ -23,3 +34,4 @@ class Finding:
     datadog_url: str | None = None  # deep link to the real evidence -- for log/event validation
     window_from_ms: int = 0
     window_to_ms: int = 0
+    evidence_links: tuple[EvidenceLink, ...] = field(default_factory=tuple)

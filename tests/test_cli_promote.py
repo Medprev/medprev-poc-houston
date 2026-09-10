@@ -51,6 +51,7 @@ def test_promote_prints_gh_command_and_never_runs_it(tmp_path, monkeypatch, caps
 
     out = capsys.readouterr().out
     assert "gh issue create --repo Medprev/medprev-product-backlog" in out
+    assert "--label AIOPS" in out
     assert "**O quê**: a rota quebra." in out
     assert "state: promoted" in out
 
@@ -100,6 +101,23 @@ def test_extract_issue_body_still_reads_the_legacy_english_heading():
 
 def test_extract_issue_body_falls_back_to_the_whole_report():
     assert extract_issue_body("## Causa raiz\nfoo") == "## Causa raiz\nfoo"
+
+
+def test_extract_issue_body_keeps_h3_subsections_intact():
+    """ADR-0022's issue body has ### subsections (Descrição, Causa raiz,
+    Linha do tempo, ...) inside `## Corpo da issue` -- the split-to-EOF
+    behaviour of extract_issue_body must carry all of them, not stop at
+    the first ###."""
+    body = (
+        "## Causa raiz\nfoo\n\n"
+        "## Corpo da issue\n"
+        "### Descrição do incidente\nX quebrou.\n\n"
+        "### Ação recomendada\nCorrigir Y no repo Z.\n"
+    )
+    extracted = extract_issue_body(body)
+    assert "### Descrição do incidente" in extracted
+    assert "### Ação recomendada" in extracted
+    assert "Corrigir Y no repo Z." in extracted
 
 
 def test_promote_reports_missing_fingerprint(tmp_path, monkeypatch, capsys):

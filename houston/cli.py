@@ -161,10 +161,15 @@ def cmd_investigate(args: argparse.Namespace) -> int:
     for i, finding in enumerate(kept, 1):
         print(f"  [{i}/{len(kept)}] {finding.fingerprint} ({finding.service}, "
               f"{finding.reason})...", end=" ", flush=True)
+        target_repo = (resolve_repo(finding.service) or {}).get("repo")
         result = agent_investigate(
             finding, max_budget_usd=args.max_budget_usd, timeout_s=args.timeout_s,
+            target_repo=target_repo,
         )
         total_usd += result.usd
+        if result.warnings:
+            print(f"\n    WARNING: unresolved timestamp marker(s): {result.warnings}",
+                  file=sys.stderr)
         if result.state == "incomplete":
             report = Report.from_finding(finding, state="incomplete", body=(
                 f"Investigação não foi concluída: {result.error}"
@@ -218,6 +223,7 @@ def cmd_promote(args: argparse.Namespace) -> int:
     command_lines = [
         "gh issue create --repo Medprev/medprev-product-backlog \\",
         f"  --title '{title}' \\",
+        "  --label AIOPS \\",
         f"  --body '{escaped_body}'",
     ]
     print("\n".join(command_lines))

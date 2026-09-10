@@ -1,5 +1,6 @@
 """E5 proof: a synthetic report contaminated by each PII class never passes."""
 from houston.pii_gate import is_clean, scan
+from houston.timestamps import format_ms
 
 
 def test_clean_report_passes():
@@ -126,3 +127,34 @@ def test_accepted_gap_a_pan_inside_a_longer_digit_run_is_not_scanned():
     chance -- around 75% odds of quarantining any report that quotes one
     long id. This asserts the gap exists on purpose."""
     assert scan("id=12344111111111111111") == []
+
+
+def test_canonical_timestamp_string_is_never_pii():
+    """ADR-0022: every report timestamp is rendered by format_ms(). The
+    literals `BRT (epoch ` and ` · ` around the epoch are load-bearing --
+    they are what stop the epoch from joining a neighbouring digit run
+    into a card-shaped candidate (see the next test)."""
+    assert scan(format_ms(1781786117679)) == []
+    assert scan(
+        f"- {format_ms(1788924912000)} — evento A\n"
+        f"- {format_ms(1789051029177)} — evento B\n"
+    ) == []
+
+
+def test_a_thousand_epochs_rendered_as_canonical_strings_never_trip_the_gate():
+    """The canonical string is what ships in every report from now on --
+    sweep enough real-shaped epochs (not just the couple above) that a
+    false positive would show up if the format ever regresses."""
+    base = 1_700_000_000_000
+    for i in range(1000):
+        text = f"- {format_ms(base + i * 3_600_000)} — evento\n"
+        assert scan(text) == [], text
+
+
+def test_epoch_joined_to_a_neighbouring_digit_run_by_one_space_is_card_shaped():
+    """Documents *why* the canonical string's surrounding literals matter:
+    without them, an epoch sitting next to another digit run one space
+    away is exactly the card-shaped candidate ADR-0017 accepts by design.
+    This is not a bug in format_ms() -- it is the reason its literals must
+    never be loosened to a bare space."""
+    assert "pan" in scan("1234 1781786117679")
