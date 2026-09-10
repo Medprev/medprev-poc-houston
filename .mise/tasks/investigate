@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
-#MISE description="Run the real agent on capped new findings -- SPENDS REAL CLAUDE CODE USAGE QUOTA (~$0.24-0.40/finding, measured live)"
+#MISE description="Run the real agent on capped new findings -- SPENDS REAL CLAUDE CODE USAGE QUOTA (~$0.63/finding measured, ADR-0024)"
 #USAGE flag "--max-findings <n>" help="Cap on findings to investigate this run" default="5"
-#USAGE flag "--max-budget-usd <amount>" help="Per-finding dollar cap passed to claude -p" default="0.50"
+#USAGE flag "--max-budget-usd <amount>" help="Per-finding dollar cap passed to claude -p; defaults to houston/agent.py:DEFAULT_MAX_BUDGET_USD"
 set -e
-python -m houston.cli investigate \
-  --max-findings "${usage_max_findings:-5}" \
-  --max-budget-usd "${usage_max_budget_usd:-0.50}"
+# The dollar cap has one source of truth, houston/agent.py -- pass the flag
+# only when the operator actually set it, so this task cannot pin a stale
+# number the way it did when both sides hardcoded 0.50 (ADR-0024).
+args=(--max-findings "${usage_max_findings:-5}")
+if [ -n "${usage_max_budget_usd:-}" ]; then
+  args+=(--max-budget-usd "${usage_max_budget_usd}")
+fi
+python -m houston.cli investigate "${args[@]}"

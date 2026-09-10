@@ -158,3 +158,28 @@ def test_epoch_joined_to_a_neighbouring_digit_run_by_one_space_is_card_shaped():
     This is not a bug in format_ms() -- it is the reason its literals must
     never be loosened to a bare space."""
     assert "pan" in scan("1234 1781786117679")
+
+
+def test_ipv4_client_ip_is_not_a_punctuated_cpf():
+    """ADR-0025: a dotted quad whose octets run 3/3/3/2 digits carries dots
+    where a CPF carries dots. Treating any dot as canonical punctuation
+    skipped the check digits and quarantined a paid investigation."""
+    for ip in (
+        "179.185.106.22", "200.155.201.10", "192.168.100.11",
+        "177.100.200.10", "255.255.255.0",
+    ):
+        assert scan(ip) == [], ip
+        assert scan(f"request do IP {ip} (Brasil/TO), status HTTP 401") == []
+
+
+def test_canonically_written_documents_still_bypass_the_check_digits():
+    """ADR-0017's rule is unchanged: the canonical layout is a declaration
+    of intent, so it is PII even when the check digits do not add up."""
+    assert scan("529.982.247-26") == ["cpf"]
+    assert scan("11.222.333/0001-99") == ["cnpj"]
+
+
+def test_documents_written_any_other_way_still_need_valid_check_digits():
+    assert scan("52998224725") == ["cpf"]          # bare, valid
+    assert scan("529 982 247 25") == ["cpf"]       # space-separated, valid
+    assert scan("11222333000181") == ["cnpj"]      # bare, valid

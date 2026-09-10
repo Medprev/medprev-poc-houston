@@ -12,13 +12,24 @@ are caught.
 """
 import re
 
-# CPF/CNPJ candidates are matched by shape first; a bare digit run then has
-# to pass the real check-digit algorithm. Punctuation is itself a
-# declaration of intent, so a formatted run is treated as PII either way.
+# CPF/CNPJ candidates are matched by shape first; a run that is not written
+# in the document's own canonical layout then has to pass the real
+# check-digit algorithm. Canonical punctuation is a declaration of intent,
+# so a canonically written run is treated as PII either way.
 _CPF_CANDIDATE = re.compile(r"\b(\d{3})([.\s-]?)(\d{3})[.\s-]?(\d{3})[.\s-]?(\d{2})\b")
 _CNPJ_CANDIDATE = re.compile(
     r"\b(\d{2})([.\s-]?)(\d{3})[.\s-]?(\d{3})[/\s-]?(\d{4})[-\s]?(\d{2})\b"
 )
+
+# The layout each document is actually written in. "Any dot, hyphen or
+# slash" is not that layout: an IPv4 address whose octets run 3/3/3/2
+# digits ("179.185.106.22") carries dots in the same places a CPF does,
+# and every dotted-quad in that shape used to skip the check digits and
+# quarantine a paid investigation (ADR-0025). Trace correlation puts
+# `http.client_ip` in report bodies routinely, so this is the common case,
+# not the corner one.
+_CPF_CANONICAL = re.compile(r"^\d{3}\.\d{3}\.\d{3}-\d{2}$")
+_CNPJ_CANONICAL = re.compile(r"^\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}$")
 _EMAIL = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
 
 # Real Brazilian area codes (DDD). "2525252525" — the live false positive
@@ -104,15 +115,18 @@ def _is_card_shaped(candidate: str) -> bool:
 
 
 def _document_hit(
-    candidate_re: re.Pattern[str], text: str, validator
+    candidate_re: re.Pattern[str],
+    canonical_re: re.Pattern[str],
+    text: str,
+    validator,
 ) -> bool:
     for match in candidate_re.finditer(text):
         raw = re.sub(r"\D", "", match.group())
-        # Only canonical document punctuation counts as a declaration of
-        # intent; space-separated digit groups occur in ordinary report
-        # text, so those still have to pass the check digits.
-        formatted = bool(re.search(r"[.\-/]", match.group()))
-        if formatted or validator(raw):
+        # Only the document's own canonical layout counts as a declaration
+        # of intent. Space-separated digit groups and other punctuation
+        # occur in ordinary report text -- IPv4 addresses above all -- so
+        # those still have to pass the check digits.
+        if canonical_re.match(match.group()) or validator(raw):
             return True
     return False
 
@@ -124,9 +138,9 @@ class PiiFinding(str):
 def scan(text: str) -> list[str]:
     """Returns the list of PII classes found, empty if clean."""
     hits: list[str] = []
-    if _document_hit(_CPF_CANDIDATE, text, _cpf_valid):
+    if _document_hit(_CPF_CANDIDATE, _CPF_CANONICAL, text, _cpf_valid):
         hits.append("cpf")
-    if _document_hit(_CNPJ_CANDIDATE, text, _cnpj_valid):
+    if _document_hit(_CNPJ_CANDIDATE, _CNPJ_CANONICAL, text, _cnpj_valid):
         hits.append("cnpj")
     if _EMAIL.search(text):
         hits.append("email")

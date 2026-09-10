@@ -33,13 +33,17 @@ from houston.timestamps import canonicalize, format_ms
 ROOT = Path(__file__).resolve().parent.parent
 ALLOWLIST_PATH = ROOT / "houston" / "allowedtools.txt"
 
-DEFAULT_MAX_BUDGET_USD = "0.50"
+# Sized against the ADR-0024 investigation shape, measured on this finding:
+# the pre-ADR-0024 prompt completed for $0.38, the correlating prompt died
+# at the old $0.50 cap in error_max_budget_usd, and completed for $0.6337.
+# Trace correlation is round-trips, and round-trips are the cost -- moving
+# the prompt means moving this, the same way moving tiers does (ADR-0023).
+DEFAULT_MAX_BUDGET_USD = "0.75"
 DEFAULT_TIMEOUT_S = 300
 
 # The tier that produced every report promoted so far, and the tier the
-# $0.50 budget is sized for (~$0.31/finding at list price on the token
-# profile of a real completed run). Opus costs 2.5x per token and defaults
-# to a higher effort level, which does not fit this cap -- raise
+# budget above is sized for. Opus costs 2.5x per token and defaults to a
+# higher effort level, which does not fit this cap -- raise
 # --max-budget-usd along with --model if you change this (ADR-0023).
 DEFAULT_MODEL = "sonnet"
 DEFAULT_EFFORT = "medium"
@@ -64,6 +68,19 @@ Pegue um `trace_id` de uma ocorrência e liste TODO o trace (logs e spans daquel
 `trace_id`): o que explica o erro quase sempre está num registro vizinho de outro nível \
 (um `warn` de guard/middleware, um span de banco, um status HTTP) que nunca aparece se \
 você olhar só o erro. Faça isso antes de concluir qualquer coisa sobre a causa.
+
+ECONOMIA DE CONTEXTO — você tem orçamento por rodada, e um dump de log cru o consome \
+inteiro sem entregar nada a mais. Pergunte em forma de NÚMERO, não de amostra:
+- Para "quanto disso existe", use agregação (`aggregate_spans`, `analyze_datadog_logs`) ou \
+uma busca com `limit: 1` e leia só a contagem total que vem no metadado — nunca pagine \
+uma busca para contar à mão.
+- Nunca peça todos os campos (`extra_fields: ["*"]`) numa busca ampla; nomeie os poucos \
+campos que você vai usar, e só amplie num único registro quando precisar descobrir a \
+forma do payload.
+- Um trace inteiro e um punhado de registros representativos bastam; mais amostras da \
+mesma coisa não mudam a conclusão.
+- Se uma consulta voltar vazia, isso é resultado: registre e siga, não tente variações \
+da mesma pergunta.
 
 SINAL OU RUÍDO — decida isso explicitamente, é a pergunta que define se alguém deve agir: \
 antes de tratar o achado como bug, verifique como o próprio serviço classifica o evento. \

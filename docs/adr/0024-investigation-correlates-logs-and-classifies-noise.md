@@ -88,11 +88,36 @@ meaning "the investigation answered". `houston metrics` reads
 becomes a measurement of the *sources* rather than of the agent's
 willingness to commit.
 
-The cost is more tool round-trips per finding: log and span queries the
-agent skipped before. The `$0.50` cap and the wall-clock timeout are
-unchanged, so a finding needing more correlation than the cap allows lands
-as `state: incomplete` rather than as a confident wrong answer — which is
-the trade this PoC already made in ADR-0006.
+The cost is more tool round-trips per finding, and it is not small.
+Measured on this same finding, same tier (`sonnet`/`medium`):
+
+| Prompt | Input tokens | Output | Duration | Spend | State |
+|---|---|---|---|---|---|
+| Before this ADR | 257,924 | 7,423 | 80.8s | $0.3820 | `new` |
+| This ADR, `$0.50` cap | 713,255 | 6,032 | 130.6s | $0.5280 | **`incomplete`** — `error_max_budget_usd` |
+| This ADR, cap raised | 1,084,986 | 12,178 | 140.9s | **$0.6337** | `new` |
+
+The first attempt at the old cap died without producing a report, so
+`DEFAULT_MAX_BUDGET_USD` moves from `$0.50` to `$0.75`: correlation is
+round-trips, and round-trips are the cost. Moving the prompt means moving
+the cap, the same way moving tiers does (ADR-0023). The cap and the mise
+task each hardcoded `0.50` independently of `houston/agent.py`, so the
+constant is now the single source of truth and the task passes the flag
+only when the operator sets one.
+
+The prompt also asks for counts and aggregations over raw samples, and for
+named fields over `extra_fields: ["*"]` — a log search that returns whole
+records spends the budget on tag arrays. That rule serves the paste ban
+too: a count is not pasteable content.
+
+The wall-clock timeout is unchanged, so a finding needing more correlation
+than the cap allows still lands as `state: incomplete` rather than as a
+confident wrong answer — the trade this PoC already made in ADR-0006.
+
+The first run under this prompt also quarantined on its own sample client
+IP, which the gate read as a punctuated CPF. That is a gate bug, fixed in
+ADR-0025; it is recorded here because trace correlation is what put a
+client IP in a report body in the first place.
 
 The paste ban itself is unchanged and still load-bearing. The same
 investigation window contains an `info` log whose payload carries a
