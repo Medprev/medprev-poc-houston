@@ -5,7 +5,7 @@ import json
 import subprocess
 from unittest.mock import patch
 
-from houston.agent import PROMPT, investigate
+from houston.agent import ALLOWLIST_PATH, PROMPT, investigate
 from houston.models import EvidenceLink, Finding
 
 
@@ -180,6 +180,40 @@ def test_prompt_issue_body_has_the_mandated_subsections():
         "### Severidade e criticidade",
     ):
         assert heading in issue_body_prompt
+
+
+def test_prompt_names_the_log_tools_it_requires():
+    """ADR-0024: the run that stopped at "causa não determinada" claimed
+    application logs were out of scope. The tools were allowlisted the
+    whole time, so the prompt has to name them."""
+    allowlist = ALLOWLIST_PATH.read_text().splitlines()
+    for tool in ("search_datadog_logs", "analyze_datadog_logs"):
+        assert any(line.strip().endswith(tool) for line in allowlist)
+        assert tool in PROMPT
+
+
+def test_prompt_separates_querying_logs_from_pasting_their_content():
+    """ADR-0024: read as one rule, the paste ban read as a read ban. The
+    paste ban itself stays -- the PII gate cannot catch a proper name."""
+    assert "CONSULTAR É OBRIGATÓRIO; COLAR É PROIBIDO" in PROMPT
+    assert "Nunca cole linha de log" in PROMPT
+    # the phrase the bad report used is named only so it can be forbidden
+    assert "fora do escopo de leitura seguro" in PROMPT
+    assert "NUNCA escreva que uma consulta ficou" in PROMPT
+
+
+def test_prompt_requires_trace_correlation_and_signal_vs_noise():
+    """ADR-0024: the record explaining the error sat in the same trace, and
+    the error was 100% `handled` -- noise. Both had to be asked for."""
+    assert "trace_id" in PROMPT
+    assert "SINAL OU RUÍDO" in PROMPT
+    assert "@error.handling" in PROMPT
+    assert "handled" in PROMPT
+
+    causa_raiz = PROMPT[PROMPT.index("## Causa raiz"):PROMPT.index("## Linha do tempo")]
+    assert "sinal ou ruído" in causa_raiz
+    # "não determinada" now has to show the queries behind it
+    assert "efetivamente rodadas" in causa_raiz or "efetivamente rodou" in causa_raiz
 
 
 @patch("houston.agent.subprocess.run")
