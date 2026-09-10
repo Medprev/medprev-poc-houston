@@ -14,6 +14,12 @@ producing three `state: incomplete` reports and no investigation.
 
 Cost accounting reads the whole usage envelope, including cache tokens and
 the envelope a *failed* run still prints on stdout — see ADR-0013.
+
+The prompt states separately that querying logs is mandatory and that
+pasting their content is forbidden -- ADR-0024: read as one rule, the
+paste ban made a run declare application logs "fora do escopo de leitura
+seguro" and stop at "causa não determinada", while the record that
+explained the error sat in the same trace.
 """
 import json
 import os
@@ -27,13 +33,17 @@ from houston.timestamps import canonicalize, format_ms
 ROOT = Path(__file__).resolve().parent.parent
 ALLOWLIST_PATH = ROOT / "houston" / "allowedtools.txt"
 
-DEFAULT_MAX_BUDGET_USD = "0.50"
+# Sized against the ADR-0024 investigation shape, measured on this finding:
+# the pre-ADR-0024 prompt completed for $0.38, the correlating prompt died
+# at the old $0.50 cap in error_max_budget_usd, and completed for $0.6337.
+# Trace correlation is round-trips, and round-trips are the cost -- moving
+# the prompt means moving this, the same way moving tiers does (ADR-0023).
+DEFAULT_MAX_BUDGET_USD = "0.75"
 DEFAULT_TIMEOUT_S = 300
 
 # The tier that produced every report promoted so far, and the tier the
-# $0.50 budget is sized for (~$0.31/finding at list price on the token
-# profile of a real completed run). Opus costs 2.5x per token and defaults
-# to a higher effort level, which does not fit this cap -- raise
+# budget above is sized for. Opus costs 2.5x per token and defaults to a
+# higher effort level, which does not fit this cap -- raise
 # --max-budget-usd along with --model if you change this (ADR-0023).
 DEFAULT_MODEL = "sonnet"
 DEFAULT_EFFORT = "medium"
@@ -43,6 +53,44 @@ Você tem ferramentas de leitura para buscar mais contexto (logs, spans, eventos
 relacionadas) — USE-AS para reconstruir o que aconteceu dentro da janela, não apenas \
 para confirmar o que já veio no achado. Não chute evidência que você não consultou de \
 verdade.
+
+CONSULTAR É OBRIGATÓRIO; COLAR É PROIBIDO — são duas regras diferentes, não confunda \
+uma com a outra. Você DEVE consultar os logs de aplicação do serviço afetado (\
+`search_datadog_logs`, `analyze_datadog_logs`) e os spans do erro (`search_datadog_spans`, \
+`aggregate_spans`); o que você não pode é COLAR o conteúdo que encontrar. Toda ferramenta \
+que aparece na sua lista de ferramentas está autorizada para esta investigação: NUNCA \
+escreva que uma consulta ficou "fora do escopo", "fora do escopo de leitura seguro" ou \
+indisponível — se você tem a ferramenta, o escopo é rodar a consulta e relatar apenas o \
+que ela devolveu, em forma de contagem, agregação ou ponteiro.
+
+O caminho mais curto para a causa raiz é o TRACE DO PRÓPRIO ERRO, não o erro isolado. \
+Pegue um `trace_id` de uma ocorrência e liste TODO o trace (logs e spans daquele \
+`trace_id`): o que explica o erro quase sempre está num registro vizinho de outro nível \
+(um `warn` de guard/middleware, um span de banco, um status HTTP) que nunca aparece se \
+você olhar só o erro. Faça isso antes de concluir qualquer coisa sobre a causa.
+
+ECONOMIA DE CONTEXTO — você tem orçamento por rodada, e um dump de log cru o consome \
+inteiro sem entregar nada a mais. Pergunte em forma de NÚMERO, não de amostra:
+- Para "quanto disso existe", use agregação (`aggregate_spans`, `analyze_datadog_logs`) ou \
+uma busca com `limit: 1` e leia só a contagem total que vem no metadado — nunca pagine \
+uma busca para contar à mão.
+- Nunca peça todos os campos (`extra_fields: ["*"]`) numa busca ampla; nomeie os poucos \
+campos que você vai usar, e só amplie num único registro quando precisar descobrir a \
+forma do payload.
+- Um trace inteiro e um punhado de registros representativos bastam; mais amostras da \
+mesma coisa não mudam a conclusão.
+- Se uma consulta voltar vazia, isso é resultado: registre e siga, não tente variações \
+da mesma pergunta.
+
+SINAL OU RUÍDO — decida isso explicitamente, é a pergunta que define se alguém deve agir: \
+antes de tratar o achado como bug, verifique como o próprio serviço classifica o evento. \
+Agregue os spans do erro por `@error.handling` (`handled` = resultado de negócio tratado \
+pelo código; `unhandled` = falha de verdade) e por `@http.status_code`, e olhe o recurso/rota \
+real. Um erro 100% `handled`, com volume estável e sem log de falha, é comportamento \
+esperado modelado como exceção — é RUÍDO no Error Tracking, e dizer isso é uma conclusão \
+válida e útil, não um fracasso da investigação. Nesse caso o defeito a relatar é o próprio \
+ruído (resultado esperado lançado como exceção) e/ou o problema real que você encontrou \
+correlacionado no trace, não uma causa inventada para o erro original.
 
 O achado já vem com links diretos para o Datadog em `evidence_links` (cada um com \
 `label`, `url` e, quando existir, `query`) e o link legado `datadog_url` — NUNCA \
@@ -85,8 +133,13 @@ Responda em português, com esta estrutura exata:
 
 ## Causa raiz
 Um parágrafo, em linguagem direta: qual é o serviço, o que está acontecendo e desde quando.
+Diga se o evento é sinal ou ruído (ver "SINAL OU RUÍDO" acima), com o número que sustenta a
+classificação — a divisão `handled`/`unhandled` que você mediu.
 Se a causa não estiver confirmada pelas evidências consultadas, diga isso explicitamente
-em vez de apresentar uma hipótese como certeza.
+em vez de apresentar uma hipótese como certeza — e, nesse caso, liste as consultas que você
+efetivamente rodou e o que cada uma devolveu (incluindo as que voltaram vazias). "Não
+determinada" sem essa lista não é uma conclusão aceitável, e alegar que uma consulta não
+era permitida é sempre falso.
 
 ## Linha do tempo
 Lista ordenada, cronológica, PASSO A PASSO dos eventos DENTRO da janela de coleta — não \
@@ -101,8 +154,10 @@ passo, diga isso e liste o que os campos do achado garantem (`window_from`, `win
 ## Evidência
 Lista com marcadores, cada um uma afirmação seguida do link de `evidence_links`/`datadog_url` \
 que a sustenta, ou — se não houver link para aquele dado específico — a consulta ou \
-chamada de ferramenta exata. Nunca cole linha de log ou dado de usuário — referencie onde \
-encontrar, não o conteúdo em si. Nunca construa uma URL: use as que vieram prontas.
+chamada de ferramenta exata. Inclua aqui as consultas de log e de span que você rodou, com \
+a contagem que cada uma devolveu. Nunca cole linha de log nem dado de usuário: isso \
+restringe o que você ESCREVE, nunca o que você CONSULTA — cite a consulta, a contagem e o \
+campo, não o conteúdo. Nunca construa uma URL: use as que vieram prontas.
 
 ## Ação recomendada
 Uma ou duas frases com a ação objetiva.
@@ -119,7 +174,8 @@ qual o impacto observável (para o usuário ou para o sistema).
 
 ### Causa raiz
 A mesma conclusão da seção `## Causa raiz` acima, resumida; diga "não determinada" se for \
-o caso, sem inventar uma causa para preencher a seção.
+o caso, sem inventar uma causa para preencher a seção. Abra com a classificação sinal ou \
+ruído e o número que a sustenta, para quem ler a issue saber se deve agir no erro em si.
 
 ### Linha do tempo
 A mesma lista passo a passo de `## Linha do tempo`, incluindo correlações relevantes \
@@ -144,7 +200,10 @@ cada número.
 ### Severidade e criticidade
 A `severity` do achado, e uma avaliação de criticidade para o negócio (impacto em \
 usuários, dados ou operação) — se a criticidade for uma inferência sua e não um dado \
-direto do achado, marque isso explicitamente como inferência.
+direto do achado, marque isso explicitamente como inferência. Se você classificou o achado \
+como ruído, diga que a `severity` do achado não se aplica ao erro em si e avalie a \
+criticidade do defeito que você de fato encontrou — inclusive quando ele é mais grave que \
+o achado original.
 
 O achado, em JSON, vem a seguir pelo stdin.
 """

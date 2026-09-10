@@ -3,6 +3,7 @@ import argparse
 import sys
 
 from houston.agent import DEFAULT_EFFORT as AGENT_DEFAULT_EFFORT
+from houston.agent import DEFAULT_MAX_BUDGET_USD as AGENT_DEFAULT_BUDGET
 from houston.agent import DEFAULT_MODEL as AGENT_DEFAULT_MODEL
 from houston.agent import investigate as agent_investigate
 from houston.collector import collect
@@ -328,7 +329,9 @@ def main() -> int:
     inv_p = sub.add_parser("investigate", help="run the real agent on capped new findings (costs money)")
     inv_p.add_argument("--window-hours", type=int, default=96)
     inv_p.add_argument("--max-findings", type=int, default=5, help="deliberately small default -- override once you trust the cost")
-    inv_p.add_argument("--max-budget-usd", default="0.50")
+    inv_p.add_argument("--max-budget-usd", default=AGENT_DEFAULT_BUDGET,
+                       help="sized for the investigation shape in ADR-0024, "
+                            "not a round number -- see houston/agent.py")
     inv_p.add_argument("--timeout-s", type=int, default=300)
     inv_p.add_argument("--model", default=AGENT_DEFAULT_MODEL,
                        help="pinned, never inherited from the operator's Claude Code "
