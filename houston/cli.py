@@ -1,5 +1,7 @@
 """houston — CLI entrypoint. `python -m houston.cli <command>`."""
 import argparse
+import re
+import subprocess
 import sys
 
 from houston.agent import DEFAULT_EFFORT as AGENT_DEFAULT_EFFORT
@@ -19,12 +21,27 @@ from houston.fix_agent import DEFAULT_EFFORT as FIX_DEFAULT_EFFORT
 from houston.fix_agent import DEFAULT_MODEL as FIX_DEFAULT_MODEL
 from houston.fix_agent import fix as agent_fix
 from houston.fix_agent import resolve_repo
-from houston.frontmatter import Report, read_report, write_report
+from houston.frontmatter import (
+    QUARANTINED_STATE,
+    Report,
+    read_report,
+    write_report,
+)
 from houston.metrics import BLOCKING_STATES, can_close_phase, compute, load_all_reports
 
 # Both headings appear in the corpus: the prompt asks for the Portuguese one,
 # the first reports on disk used the English one.
 _ISSUE_BODY_HEADINGS = ("## Corpo da issue", "## Issue body")
+
+ISSUE_REPO = "Medprev/medprev-product-backlog"
+ISSUE_LABEL = "AIOPS"
+ISSUE_ACCOUNT = "carlacurymed"
+
+# Text the report renderer is supposed to have replaced: the collection
+# window's own field names, and the timestamp markers of ADR-0022. One left
+# raw means the body still carries a placeholder, and a shared backlog is
+# not where that gets noticed.
+_UNEXPANDED_MARKERS = ("window_from", "window_to", "{{ts:")
 
 
 def _unfence(text: str) -> str:
@@ -203,10 +220,85 @@ def cmd_investigate(args: argparse.Namespace) -> int:
 
 
 
+def issue_title(report: dict) -> str:
+    """Names the error, in the shape the backlog reads.
+
+    `reason` is the diagnostic label (error_type / monitor name / k8s
+    Reason); novelty is a separate field, so the title names the error
+    instead of naming how new it is."""
+    novelty = "regression: " if report.get("novelty") == "regression" else ""
+    return (
+        f"[{report['source']}] {novelty}{report['reason']} "
+        f"in {report.get('service') or 'unknown service'}"
+    )
+
+
+def active_gh_account() -> str | None:
+    """The account `gh` would act as, or None when it cannot be read.
+
+    A 404 on a private Medprev repo is almost always this flipped to the
+    personal account, and by then half the work has already happened."""
+    result = subprocess.run(
+        ["gh", "auth", "status", "--active"],
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0:
+        return None
+    match = re.search(r"Logged in to \S+ account (\S+)", result.stdout + result.stderr)
+    return match.group(1) if match else None
+
+
+def promotion_blockers(report: dict, issue_body: str, account: str | None) -> list[str]:
+    """Everything that must be true before an issue reaches the shared
+    backlog. Each one fails closed: filing is outward-facing, and undoing
+    it means a human closing an issue other people already saw."""
+    blockers = []
+    if account != ISSUE_ACCOUNT:
+        blockers.append(
+            f"active gh account is {account or 'unreadable'}, not {ISSUE_ACCOUNT} "
+            f"-- run: gh auth switch --user {ISSUE_ACCOUNT}"
+        )
+    if report.get("issue"):
+        blockers.append(f"report already carries issue: {report['issue']}")
+    if report.get("state") == QUARANTINED_STATE:
+        blockers.append(
+            "report is quarantined -- its body is the redaction record, "
+            "not an investigation (ADR-0015)"
+        )
+    raw = [marker for marker in _UNEXPANDED_MARKERS if marker in issue_body]
+    if raw:
+        blockers.append(f"issue body carries unexpanded markers: {', '.join(raw)}")
+    return blockers
+
+
+def create_issue(title: str, body: str) -> str | None:
+    """Files the issue and returns its URL, or None on failure.
+
+    Arguments go through argv, never a shell, so the body needs no quoting
+    -- the printed form is the one a human pastes into a shell, and only
+    that one is escaped."""
+    result = subprocess.run(
+        ["gh", "issue", "create", "--repo", ISSUE_REPO, "--title", title,
+         "--label", ISSUE_LABEL, "--body", body],
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0:
+        print(result.stderr.strip(), file=sys.stderr)
+        return None
+    urls = [line.strip() for line in result.stdout.splitlines()
+            if line.strip().startswith("http")]
+    return urls[-1] if urls else None
+
+
 def cmd_promote(args: argparse.Namespace) -> int:
-    """Prints a ready gh issue create command for a report. Never runs it --
-    promoting is a human gesture and the instrument that measures the
-    false-positive rate (see the plan's own E6 design)."""
+    """Prints a ready gh issue create command for a report, and with
+    --create runs it and records the result.
+
+    Promoting stays a human gesture: the decision "actionable or noise" is
+    the instrument that measures the false-positive rate. What --create
+    removes is the typing -- filing the issue and writing `issue:` +
+    `state: promoted` back, the step that is easy to forget precisely
+    because it is separate from the command (ADR-0028)."""
     path = report_path(args.fingerprint)
     if not path.exists():
         print(f"no report at {path}", file=sys.stderr)
@@ -216,25 +308,35 @@ def cmd_promote(args: argparse.Namespace) -> int:
     _, _, body = text.split("---", 2)
 
     issue_body = extract_issue_body(body)
+    title = issue_title(report)
 
-    # `reason` is the diagnostic label (error_type / monitor name / k8s
-    # Reason); novelty is a separate field, so the title names the error
-    # instead of naming how new it is.
-    novelty = "regression: " if report.get("novelty") == "regression" else ""
-    title = (
-        f"[{report['source']}] {novelty}{report['reason']} "
-        f"in {report.get('service') or 'unknown service'}"
-    )
-    escaped_body = issue_body.replace("'", "'\\''")
-    command_lines = [
-        "gh issue create --repo Medprev/medprev-product-backlog \\",
-        f"  --title '{title}' \\",
-        "  --label AIOPS \\",
-        f"  --body '{escaped_body}'",
-    ]
-    print("\n".join(command_lines))
-    print(f"\n# after running the command above, paste the issue URL into "
-          f"{path}'s front-matter (issue: field) and set state: promoted")
+    if not args.create:
+        escaped_body = issue_body.replace("'", "'\\''")
+        command_lines = [
+            f"gh issue create --repo {ISSUE_REPO} \\",
+            f"  --title '{title}' \\",
+            f"  --label {ISSUE_LABEL} \\",
+            f"  --body '{escaped_body}'",
+        ]
+        print("\n".join(command_lines))
+        print(f"\n# run the command above, or re-run with --create to file the "
+              f"issue and record it in {path} automatically")
+        return 0
+
+    blockers = promotion_blockers(report, issue_body, active_gh_account())
+    if blockers:
+        for blocker in blockers:
+            print(f"refusing to promote: {blocker}", file=sys.stderr)
+        return 1
+
+    url = create_issue(title, issue_body)
+    if url is None:
+        print("gh issue create failed -- report left untouched", file=sys.stderr)
+        return 1
+
+    update_front_matter(path, issue=url, state="promoted")
+    print(f"issue: {url}")
+    print(f"{path}: state: promoted")
     return 0
 
 
@@ -284,28 +386,30 @@ def cmd_fix(args: argparse.Namespace) -> int:
     print(f"  state: {result.state}  cost: ${result.usd:.4f}")
     if result.pr_url:
         print(f"  PR: {result.pr_url}")
-        import subprocess as sp
-        sp.run(
+        subprocess.run(
             ["gh", "issue", "comment", issue_url, "--body",
              f"PR aberto pelo Houston fix agent: {result.pr_url}"],
             check=False, capture_output=True,
         )
-        _update_fix_fields(path, result.pr_url, result.state)
+        update_front_matter(path, fix_pr=result.pr_url, fix_state=result.state)
     elif result.error:
         print(f"  error: {result.error}", file=sys.stderr)
-        _update_fix_fields(path, None, "incomplete")
+        update_front_matter(path, fix_pr=None, fix_state="incomplete")
 
     return 0 if result.pr_url else 1
 
 
-def _update_fix_fields(path, pr_url, fix_state):
-    """Updates fix_pr and fix_state in the report's front-matter."""
+def update_front_matter(path, **fields):
+    """Writes structured fields back into an existing report.
+
+    Values here are code-owned -- a URL `gh` printed, a state this CLI
+    chose -- never model text, so this does not re-run the PII gate over
+    a body that already passed it at write time."""
     import yaml as _yaml
     text = path.read_text()
     _, front_raw, body = text.split("---", 2)
     fm = _yaml.safe_load(front_raw)
-    fm["fix_pr"] = pr_url
-    fm["fix_state"] = fix_state
+    fm.update(fields)
     yaml_block = _yaml.safe_dump(fm, sort_keys=False, allow_unicode=True)
     path.write_text(f"---\n{yaml_block}---{body}")
 
@@ -340,8 +444,11 @@ def main() -> int:
                        choices=["low", "medium", "high", "xhigh", "max"])
     inv_p.set_defaults(func=cmd_investigate)
 
-    promote_p = sub.add_parser("promote", help="print (never run) a ready gh issue create for a report")
+    promote_p = sub.add_parser("promote", help="print a ready gh issue create for a report; --create files it")
     promote_p.add_argument("fingerprint")
+    promote_p.add_argument("--create", action="store_true",
+                           help="file the issue and record issue: + state: promoted "
+                                "in the report -- without it, the command only prints")
     promote_p.set_defaults(func=cmd_promote)
 
     fix_p = sub.add_parser("fix", help="create a PR fixing a promoted finding (costs money)")
