@@ -28,8 +28,12 @@ flowchart TD
     end
 
     subgraph PROMOTE["5 — Promover para issue"]
-        M --> O["houston promote fingerprint<br>imprime gh issue create"]
-        O --> P["humano executa<br>cola issue URL no front-matter"]
+        M --> O{"houston promote fingerprint"}
+        O -->|sem --create| O2["imprime gh issue create<br>humano executa e cola a URL"]
+        O -->|--create| O3{"4 guardas:<br>conta gh · issue ja existente<br>quarentena · marcador cru"}
+        O3 -->|bloqueio| O4["exit 1:<br>report intocado"]
+        O3 -->|livre| P["gh issue create<br>grava issue: + state: promoted"]
+        O2 --> P
     end
 
     subgraph RESOLVE["6 — Resolver servico → repo"]

@@ -45,7 +45,7 @@ O pipeline tem duas fases de agente e três decisões humanas:
 
 5. **Decisão humana** — o humano lê o relatório e marca `state: promoted` (bug real, vira issue) ou `state: discarded` (ruído). Essa decisão é o que mede a taxa de falso positivo.
 
-6. **Promover** — `houston promote <fingerprint>` gera o comando `gh issue create` com o corpo da issue e a label `AIOPS` (toda issue aberta pelo agente carrega essa label, para dar para filtrar). O humano executa e cola a URL da issue no front-matter do report.
+6. **Promover** — `houston promote <fingerprint>` gera o comando `gh issue create` com o corpo da issue e a label `AIOPS` (toda issue aberta pelo agente carrega essa label, para dar para filtrar). Com `--create`, o próprio comando abre a issue e grava `issue:` + `state: promoted` no report, depois de quatro guardas que falham fechado: conta `gh` ativa, issue já registrada, report em quarentena e marcador não expandido no corpo (ADR-0028).
 
 7. **Corrigir** — `houston fix <fingerprint>` roda um segundo `claude -p`, agora com ferramentas de código (Bash, Read, Write, Edit), contra o repo do serviço afetado via git worktree. O agente lê o relatório, navega o codebase, escreve a correção, tenta rodar testes, e abre um PR linkado à issue.
 
@@ -83,7 +83,7 @@ Task runner: [mise](https://mise.jdx.dev). `mise run <task>`, ou `mise tasks` pa
 | `mise run run` | Coleta + dedup + cap, imprime o que seria investigado | Não |
 | `mise run seed` | Registra achados pré-existentes como `state: seeded` | Não |
 | `mise run investigate` | Roda o agente de investigação nos achados novos | **Sim** — ~$0.30–0.42/finding |
-| `mise run promote <fp>` | Imprime o `gh issue create` pronto | Não |
+| `mise run promote <fp>` | Imprime o `gh issue create` pronto; com `--create`, abre a issue e grava a URL no report | Não |
 | `mise run fix <fp> --issue <url>` | Roda o agente de correção, abre PR | **Sim** — ~$2–3/fix |
 | `mise run metrics` | FP rate, fix rate, custo, prontidão de fase | Não |
 
@@ -93,8 +93,8 @@ Task runner: [mise](https://mise.jdx.dev). `mise run <task>`, ou `mise tasks` pa
 mise run run                          # ver o que apareceu
 mise run investigate                  # investigar top 5 (~$1.90)
 # ler os reports, decidir state: promoted ou discarded
-mise run promote <fingerprint>        # gerar comando de issue
-# rodar o gh issue create, colar URL no report
+mise run promote <fingerprint>        # conferir o comando/corpo que seria aberto
+mise run promote <fingerprint> --create   # abrir a issue e gravar a URL no report
 mise run fix <fp> --issue <url>       # corrigir via PR (~$3.00)
 mise run metrics                      # conferir FP rate e fix rate
 ```

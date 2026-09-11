@@ -56,7 +56,7 @@ The `houston` CLI, reached through mise (`mise run run`, `mise run seed`, `mise 
 | `houston run` | Collect + dedup + cap, print what *would* be investigated | No — read-only Datadog REST calls |
 | `houston seed` | Record pre-existing findings as `state: seeded`, no investigation | No |
 | `houston investigate` | Run the real agent (`claude -p` subprocess) on capped new findings, write real reports | **Yes** — real Claude Code usage quota, ~$0.30–$0.42/finding **on the pinned Sonnet default**, computed by `houston metrics`, not typed by hand. The tier is the dominant cost lever, not the prompt: `--model opus` costs ~2.5x per token and does not fit the $0.50 cap (ADR-0023). Default `--max-findings` is 5, deliberately small |
-| `houston promote <fingerprint>` | Print (never run) a ready `gh issue create` command from a report's own issue-body section (`## Corpo da issue`, or the legacy `## Issue body`), code fence unwrapped | No |
+| `houston promote <fingerprint>` | Print a ready `gh issue create` command from a report's own issue-body section (`## Corpo da issue`, or the legacy `## Issue body`), code fence unwrapped. `--create` runs it and writes `issue:` + `state: promoted` back, behind four fail-closed guards (ADR-0028) | No |
 | `houston metrics` | Compute false-positive rate, spend (total/mean/p50/p95, and per state), token and duration percentiles, and whether the phase can close | No |
 
 ## Architecture
