@@ -1,10 +1,9 @@
 """E6 — houston metrics. Every number here comes from front-matter; nothing
 is typed by hand, same pattern as medprev-qa-agent."""
 from dataclasses import dataclass, field
-from pathlib import Path
 
-from houston.dedup import REPORTS_DIR
 from houston.frontmatter import read_report
+from houston.report_store import DEFAULT_STORE, ReportStore
 
 # A report in one of these is work the phase still owes: `new` needs a human
 # decision, `incomplete` needs a rerun, `quarantined` needs a human to read
@@ -43,15 +42,8 @@ def _percentile(values: list[float], pct: float) -> float:
     return ordered[idx]
 
 
-def load_all_reports(reports_dir: Path | None = None) -> list[dict]:
-    directory = reports_dir or REPORTS_DIR
-    if not directory.exists():
-        return []
-    return [
-        read_report(p)
-        for p in sorted(directory.glob("*.md"))
-        if p.parent.name != ".quarantine"
-    ]
+def load_all_reports(store: ReportStore = DEFAULT_STORE) -> list[dict]:
+    return [read_report(p) for p in store.iter_paths()]
 
 
 def _cost(report: dict) -> dict:

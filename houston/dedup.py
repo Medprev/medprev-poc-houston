@@ -3,21 +3,23 @@ handled; that is the entire dedup mechanism, no separate index needed."""
 from collections import defaultdict
 from pathlib import Path
 
+from houston.frontmatter import read_report
 from houston.models import Finding
-
-REPORTS_DIR = Path(__file__).resolve().parent.parent / "reports"
-
-
-def report_path(fingerprint: str) -> Path:
-    return REPORTS_DIR / f"{fingerprint}.md"
+from houston.report_store import DEFAULT_STORE, ReportStore
 
 
-def already_reported(fingerprint: str) -> bool:
-    return report_path(fingerprint).exists()
+def report_path(fingerprint: str, store: ReportStore = DEFAULT_STORE) -> Path:
+    return store.path(fingerprint)
 
 
-def filter_new(findings: list[Finding]) -> list[Finding]:
-    return [f for f in findings if not already_reported(f.fingerprint)]
+def already_reported(fingerprint: str, store: ReportStore = DEFAULT_STORE) -> bool:
+    return store.exists(fingerprint)
+
+
+def filter_new(
+    findings: list[Finding], store: ReportStore = DEFAULT_STORE,
+) -> list[Finding]:
+    return [f for f in findings if not already_reported(f.fingerprint, store)]
 
 
 # States that mean "no real investigation happened yet" -- a report in one
@@ -29,21 +31,19 @@ def filter_new(findings: list[Finding]) -> list[Finding]:
 NEEDS_INVESTIGATION_STATES = {"seeded", "incomplete"}
 
 
-def needs_investigation(fingerprint: str) -> bool:
+def needs_investigation(fingerprint: str, store: ReportStore = DEFAULT_STORE) -> bool:
     """Predicate form of filter_needing_investigation. The collector uses it
     to decide which findings are worth an extra per-finding detail call, so
     the expensive fan-out follows the same rule as the investigation itself."""
-    from houston.frontmatter import (
-        read_report,  # deferred: frontmatter imports REPORTS_DIR from this module
-    )
-
-    path = report_path(fingerprint)
+    path = store.path(fingerprint)
     if not path.exists():
         return True
     return read_report(path).get("state") in NEEDS_INVESTIGATION_STATES
 
 
-def filter_needing_investigation(findings: list[Finding]) -> list[Finding]:
+def filter_needing_investigation(
+    findings: list[Finding], store: ReportStore = DEFAULT_STORE,
+) -> list[Finding]:
     """Unlike filter_new, a finding is NOT excluded just because
     reports/{fingerprint}.md exists -- `houston seed` deliberately writes a
     report with no real investigation (state: seeded), and dedup treating
@@ -52,7 +52,7 @@ def filter_needing_investigation(findings: list[Finding]) -> list[Finding]:
     what `houston run`/`houston investigate` should use; `houston seed`
     keeps using `filter_new` (existence-only), since seeding must never
     overwrite an already-decided or already-investigated report."""
-    return [f for f in findings if needs_investigation(f.fingerprint)]
+    return [f for f in findings if needs_investigation(f.fingerprint, store)]
 
 
 # Severity is computed by each source at real effort (ADR-0009 spent a whole

@@ -5,11 +5,9 @@ from pathlib import Path
 
 import yaml
 
-from houston.dedup import REPORTS_DIR
 from houston.models import Finding
 from houston.pii_gate import scan
-
-QUARANTINE_DIR = REPORTS_DIR / ".quarantine"
+from houston.report_store import DEFAULT_STORE, ReportStore
 
 # A PII hit is not "nothing happened": the investigation ran and was paid
 # for. The full text goes to the gitignored quarantine, and this state is
@@ -138,7 +136,7 @@ def _quarantine_record(report: Report, hits: list[str]) -> Report:
     return replace(report, state=QUARANTINED_STATE, body=body)
 
 
-def write_report(report: Report) -> WriteResult:
+def write_report(report: Report, store: ReportStore = DEFAULT_STORE) -> WriteResult:
     """The only path anything reaches reports/ through. Gates on the full
     rendered markdown (front-matter + body), not the body alone — a stray
     PII in a structured field is still a leak.
@@ -149,21 +147,19 @@ def write_report(report: Report) -> WriteResult:
     markdown = report.to_markdown()
     hits = scan(markdown)
     if hits:
-        QUARANTINE_DIR.mkdir(parents=True, exist_ok=True)
-        path = QUARANTINE_DIR / f"{report.fingerprint}.md"
-        path.write_text(markdown)
+        path = store.write_quarantined(report.fingerprint, markdown)
         return WriteResult(
             written=False, path=path, pii_hits=hits,
-            record_path=_write_quarantine_record(report, hits),
+            record_path=_write_quarantine_record(report, hits, store),
         )
 
-    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    path = REPORTS_DIR / f"{report.fingerprint}.md"
-    path.write_text(markdown)
+    path = store.write(report.fingerprint, markdown)
     return WriteResult(written=True, path=path, pii_hits=[])
 
 
-def _write_quarantine_record(report: Report, hits: list[str]) -> Path | None:
+def _write_quarantine_record(
+    report: Report, hits: list[str], store: ReportStore,
+) -> Path | None:
     """Writes the redacted stub, itself gated. If even the stub's structured
     fields trip the gate, they are the leak: drop them and keep only what
     dedup and metrics need. If that still trips, nothing is written and the
@@ -178,10 +174,7 @@ def _write_quarantine_record(report: Report, hits: list[str]) -> Path | None:
         markdown = candidate.to_markdown()
         if scan(markdown):
             continue
-        REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-        path = REPORTS_DIR / f"{candidate.fingerprint}.md"
-        path.write_text(markdown)
-        return path
+        return store.write(candidate.fingerprint, markdown)
     return None
 
 
