@@ -239,13 +239,16 @@ def _load_allowlist() -> str:
     return ",".join(names)
 
 
-def _payload_or_none(stdout: str | bytes | None) -> dict | None:
+def _payload_or_none(stdout: str | None) -> dict | None:
     """The CLI prints its JSON envelope on stdout even when it exits
-    non-zero, so this runs on every path, not just the success one."""
+    non-zero, so this runs on every path, not just the success one.
+
+    Every caller passes ModelOutcome.stdout, which model_runner.py already
+    decodes from bytes if the subprocess layer ever captured it that way
+    (ADR-0031) -- decoding here too would be dead code duplicating that
+    rule in a second place."""
     if not stdout:
         return None
-    if isinstance(stdout, bytes):
-        stdout = stdout.decode("utf-8", errors="replace")
     try:
         parsed = json.loads(stdout)
     except json.JSONDecodeError:

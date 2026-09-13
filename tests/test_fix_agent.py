@@ -15,11 +15,7 @@ from houston.fix_agent import (
 )
 from houston.model_runner import ModelOutcome
 from tests.fake_runner import FakeRunner
-
-
-def _outcome(stdout: str, returncode: int = 0, stderr: str = "") -> ModelOutcome:
-    return ModelOutcome(returncode=returncode, stdout=stdout, stderr=stderr)
-
+from tests.fake_runner import outcome as _outcome
 
 GOOD_PAYLOAD = json.dumps({
     "result": "Fixed the bug. PR: https://github.com/Medprev/medprev-web-app/pull/42",

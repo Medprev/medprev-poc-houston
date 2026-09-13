@@ -8,6 +8,7 @@ from houston.agent import ALLOWLIST_PATH, PROMPT, investigate
 from houston.model_runner import ModelOutcome
 from houston.models import EvidenceLink, Finding
 from tests.fake_runner import FakeRunner
+from tests.fake_runner import outcome as _outcome
 
 
 def _finding(**overrides) -> Finding:
@@ -27,9 +28,6 @@ def _finding(**overrides) -> Finding:
     defaults.update(overrides)
     return Finding(**defaults)
 
-
-def _outcome(stdout: str, returncode: int = 0, stderr: str = "") -> ModelOutcome:
-    return ModelOutcome(returncode=returncode, stdout=stdout, stderr=stderr)
 
 
 def test_claudecode_env_var_is_stripped_to_allow_nesting():

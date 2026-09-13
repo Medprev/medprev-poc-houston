@@ -40,7 +40,16 @@ class ModelOutcome:
 
 
 class ModelRunner(Protocol):
-    def run(self, request: ModelRun) -> ModelOutcome: ...
+    def run(self, request: ModelRun) -> ModelOutcome:
+        """Must never raise on a timeout -- return
+        ModelOutcome(timed_out=True) instead, the way SubprocessRunner does.
+        Both `agent.investigate` and `fix_agent.fix` call this with no
+        try/except around it, trusting the runner to report a timeout as
+        data; an implementation (e.g. a future RecordedRunner) that lets
+        TimeoutExpired or any other exception propagate breaks the
+        system's invariant that a timeout always produces
+        state: incomplete, never a crash."""
+        ...
 
 
 class SubprocessRunner:
