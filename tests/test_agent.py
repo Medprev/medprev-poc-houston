@@ -2,11 +2,12 @@
 a timeout or failure never fabricates a result — it becomes incomplete,
 and it never reports the cost of a failed run as zero."""
 import json
-import subprocess
 from unittest.mock import patch
 
 from houston.agent import ALLOWLIST_PATH, PROMPT, investigate
+from houston.model_runner import ModelOutcome
 from houston.models import EvidenceLink, Finding
+from tests.fake_runner import FakeRunner
 
 
 def _finding(**overrides) -> Finding:
@@ -27,47 +28,41 @@ def _finding(**overrides) -> Finding:
     return Finding(**defaults)
 
 
-def _fake_completed(stdout: str, returncode: int = 0, stderr: str = ""):
-    return subprocess.CompletedProcess(
-        args=[], returncode=returncode, stdout=stdout, stderr=stderr,
-    )
+def _outcome(stdout: str, returncode: int = 0, stderr: str = "") -> ModelOutcome:
+    return ModelOutcome(returncode=returncode, stdout=stdout, stderr=stderr)
 
 
-@patch("houston.agent.subprocess.run")
-def test_claudecode_env_var_is_stripped_to_allow_nesting(mock_run):
-    mock_run.return_value = _fake_completed(json.dumps(
+def test_claudecode_env_var_is_stripped_to_allow_nesting():
+    runner = FakeRunner(_outcome(json.dumps(
         {"result": "ok", "usage": {"input_tokens": 1, "output_tokens": 1},
          "duration_ms": 10, "total_cost_usd": 0.001}
-    ))
+    )))
     with patch.dict("os.environ", {"CLAUDECODE": "1"}):
-        investigate(_finding())
-    passed_env = mock_run.call_args.kwargs["env"]
-    assert "CLAUDECODE" not in passed_env
+        investigate(_finding(), runner=runner)
+    assert "CLAUDECODE" not in runner.calls[0].env
 
 
-@patch("houston.agent.subprocess.run")
-def test_bash_write_edit_are_always_disallowed(mock_run):
-    mock_run.return_value = _fake_completed(json.dumps(
+def test_bash_write_edit_are_always_disallowed():
+    runner = FakeRunner(_outcome(json.dumps(
         {"result": "ok", "usage": {}, "duration_ms": 10, "total_cost_usd": 0.0}
-    ))
-    investigate(_finding())
-    cmd = mock_run.call_args.args[0]
+    )))
+    investigate(_finding(), runner=runner)
+    cmd = runner.calls[0].argv
     idx = cmd.index("--disallowedTools")
     assert cmd[idx + 1] == "Bash,Write,Edit"
 
 
-@patch("houston.agent.subprocess.run")
-def test_payload_carries_the_window_the_count_belongs_to(mock_run):
+def test_payload_carries_the_window_the_count_belongs_to():
     """Regression test: the payload sent a window-scoped observed_count next
     to a years-old first_seen_ms and no window at all, so reports narrated
     "2272 ocorrências desde 2025-03-18" -- a sentence mixing two scopes --
     and that number landed in a ready-to-paste GitHub issue (ADR-0014)."""
-    mock_run.return_value = _fake_completed(json.dumps(
+    runner = FakeRunner(_outcome(json.dumps(
         {"result": "ok", "usage": {}, "duration_ms": 1, "total_cost_usd": 0.0}
-    ))
-    investigate(_finding())
+    )))
+    investigate(_finding(), runner=runner)
 
-    payload = json.loads(mock_run.call_args.kwargs["input"])
+    payload = json.loads(runner.calls[0].stdin)
     assert payload["window_from_ms"] == 1787940071675
     assert payload["window_to_ms"] == 1788285671675
     assert payload["observed_count"] == 406
@@ -76,16 +71,15 @@ def test_payload_carries_the_window_the_count_belongs_to(mock_run):
     assert payload["raw"]["sample_workload"].startswith("medprev-rest-api-ag-")
 
 
-@patch("houston.agent.subprocess.run")
-def test_payload_carries_prerendered_canonical_timestamps(mock_run):
+def test_payload_carries_prerendered_canonical_timestamps():
     """The model must never compute a date itself -- code renders every
     finding-owned timestamp and the payload carries the final string."""
-    mock_run.return_value = _fake_completed(json.dumps(
+    runner = FakeRunner(_outcome(json.dumps(
         {"result": "ok", "usage": {}, "duration_ms": 1, "total_cost_usd": 0.0}
-    ))
-    investigate(_finding())
+    )))
+    investigate(_finding(), runner=runner)
 
-    payload = json.loads(mock_run.call_args.kwargs["input"])
+    payload = json.loads(runner.calls[0].stdin)
     assert payload["window_from"] == (
         "15:01:11 28/08/2026 BRT (epoch 1787940071675 · 2026-08-28T18:01:11.675Z)"
     )
@@ -93,28 +87,26 @@ def test_payload_carries_prerendered_canonical_timestamps(mock_run):
     assert payload["last_seen"] is not None
 
 
-@patch("houston.agent.subprocess.run")
-def test_payload_timestamps_are_none_safe(mock_run):
+def test_payload_timestamps_are_none_safe():
     """Kubernetes/monitor findings can have no first/last sighting at all
     (empty event sample) -- the payload must carry null, not raise."""
-    mock_run.return_value = _fake_completed(json.dumps(
+    runner = FakeRunner(_outcome(json.dumps(
         {"result": "ok", "usage": {}, "duration_ms": 1, "total_cost_usd": 0.0}
-    ))
-    investigate(_finding(first_seen_ms=None, last_seen_ms=None))
+    )))
+    investigate(_finding(first_seen_ms=None, last_seen_ms=None), runner=runner)
 
-    payload = json.loads(mock_run.call_args.kwargs["input"])
+    payload = json.loads(runner.calls[0].stdin)
     assert payload["first_seen"] is None
     assert payload["last_seen"] is None
 
 
-@patch("houston.agent.subprocess.run")
-def test_payload_carries_evidence_links_and_target_repo(mock_run):
-    mock_run.return_value = _fake_completed(json.dumps(
+def test_payload_carries_evidence_links_and_target_repo():
+    runner = FakeRunner(_outcome(json.dumps(
         {"result": "ok", "usage": {}, "duration_ms": 1, "total_cost_usd": 0.0}
-    ))
-    investigate(_finding(), target_repo="Medprev/medprev-rest-api")
+    )))
+    investigate(_finding(), target_repo="Medprev/medprev-rest-api", runner=runner)
 
-    payload = json.loads(mock_run.call_args.kwargs["input"])
+    payload = json.loads(runner.calls[0].stdin)
     assert payload["evidence_links"] == [{
         "label": "Issue no Error Tracking",
         "url": "https://app.datadoghq.com/error-tracking/issue/et-test",
@@ -123,25 +115,23 @@ def test_payload_carries_evidence_links_and_target_repo(mock_run):
     assert payload["target_repo"] == "Medprev/medprev-rest-api"
 
 
-@patch("houston.agent.subprocess.run")
-def test_target_repo_defaults_to_none_for_infra_findings(mock_run):
-    mock_run.return_value = _fake_completed(json.dumps(
+def test_target_repo_defaults_to_none_for_infra_findings():
+    runner = FakeRunner(_outcome(json.dumps(
         {"result": "ok", "usage": {}, "duration_ms": 1, "total_cost_usd": 0.0}
-    ))
-    investigate(_finding())
+    )))
+    investigate(_finding(), runner=runner)
 
-    payload = json.loads(mock_run.call_args.kwargs["input"])
+    payload = json.loads(runner.calls[0].stdin)
     assert payload["target_repo"] is None
 
 
-@patch("houston.agent.subprocess.run")
-def test_body_timestamp_markers_are_expanded_to_canonical_strings(mock_run):
-    mock_run.return_value = _fake_completed(json.dumps({
+def test_body_timestamp_markers_are_expanded_to_canonical_strings():
+    runner = FakeRunner(_outcome(json.dumps({
         "result": "## Causa raiz\nfoo\n\n## Linha do tempo\n"
                    "- {{ts:1781786117679}} — evento X",
         "usage": {}, "duration_ms": 1, "total_cost_usd": 0.0,
-    }))
-    result = investigate(_finding())
+    })))
+    result = investigate(_finding(), runner=runner)
 
     assert result.state == "new"
     assert "09:35:17 18/06/2026 BRT" in result.body
@@ -149,13 +139,12 @@ def test_body_timestamp_markers_are_expanded_to_canonical_strings(mock_run):
     assert result.warnings == []
 
 
-@patch("houston.agent.subprocess.run")
-def test_malformed_timestamp_marker_is_reported_as_a_warning(mock_run):
-    mock_run.return_value = _fake_completed(json.dumps({
+def test_malformed_timestamp_marker_is_reported_as_a_warning():
+    runner = FakeRunner(_outcome(json.dumps({
         "result": "## Causa raiz\nfoo\n\n## Linha do tempo\n- {{ts:not-a-date}}",
         "usage": {}, "duration_ms": 1, "total_cost_usd": 0.0,
-    }))
-    result = investigate(_finding())
+    })))
+    result = investigate(_finding(), runner=runner)
 
     assert result.state == "new"
     assert "{{ts:not-a-date}}" in result.body
@@ -216,33 +205,32 @@ def test_prompt_requires_trace_correlation_and_signal_vs_noise():
     assert "efetivamente rodadas" in causa_raiz or "efetivamente rodou" in causa_raiz
 
 
-@patch("houston.agent.subprocess.run")
-def test_timeout_produces_incomplete_not_a_fabricated_result(mock_run):
-    mock_run.side_effect = subprocess.TimeoutExpired(cmd=["claude"], timeout=5)
-    result = investigate(_finding(), timeout_s=5)
+def test_timeout_produces_incomplete_not_a_fabricated_result():
+    runner = FakeRunner(ModelOutcome(
+        returncode=None, stdout="", stderr="", timed_out=True,
+    ))
+    result = investigate(_finding(), timeout_s=5, runner=runner)
     assert result.state == "incomplete"
     assert result.body is None
     assert "timed out" in result.error
     assert result.duration_s == 5.0
 
 
-@patch("houston.agent.subprocess.run")
-def test_nonzero_exit_produces_incomplete(mock_run):
-    mock_run.return_value = _fake_completed("", returncode=1, stderr="some CLI error")
-    result = investigate(_finding())
+def test_nonzero_exit_produces_incomplete():
+    runner = FakeRunner(_outcome("", returncode=1, stderr="some CLI error"))
+    result = investigate(_finding(), runner=runner)
     assert result.state == "incomplete"
     assert result.body is None
     assert "some CLI error" in result.error
 
 
-@patch("houston.agent.subprocess.run")
-def test_exhausted_budget_records_what_it_actually_spent(mock_run):
+def test_exhausted_budget_records_what_it_actually_spent():
     """Verified live (2026-09-02): `claude -p --max-budget-usd` exits 1 with
     an EMPTY stderr and the whole envelope on stdout. Hardcoding usd=0.0 on
     the non-zero-exit path recorded $0.00 for a run that had really spent
     $0.138283, wrote an error message with nothing after the colon, and
     left the finding first in line to be retried (ADR-0013)."""
-    mock_run.return_value = _fake_completed(
+    runner = FakeRunner(_outcome(
         json.dumps({
             "is_error": True,
             "subtype": "error_max_budget_usd",
@@ -255,8 +243,8 @@ def test_exhausted_budget_records_what_it_actually_spent(mock_run):
         }),
         returncode=1,
         stderr="",
-    )
-    result = investigate(_finding())
+    ))
+    result = investigate(_finding(), runner=runner)
 
     assert result.state == "incomplete"
     assert result.body is None
@@ -267,21 +255,20 @@ def test_exhausted_budget_records_what_it_actually_spent(mock_run):
     assert "Reached maximum budget" in result.error
 
 
-@patch("houston.agent.subprocess.run")
-def test_input_tokens_include_cache_reads_and_cache_writes(mock_run):
+def test_input_tokens_include_cache_reads_and_cache_writes():
     """Verified live: a real run reported usage.input_tokens=0 next to
     cache_read=10596 and cache_creation=13285. Counting only
     usage.input_tokens understated the E6 metric by three orders of
     magnitude -- every report on disk records 2-14 input tokens for a
     ~$0.32 investigation (ADR-0013)."""
-    mock_run.return_value = _fake_completed(json.dumps({
+    runner = FakeRunner(_outcome(json.dumps({
         "result": "## Causa raiz\nfoo",
         "usage": {"input_tokens": 0, "output_tokens": 1204,
                   "cache_read_input_tokens": 10596,
                   "cache_creation_input_tokens": 13285},
         "duration_ms": 30100, "total_cost_usd": 0.32,
-    }))
-    result = investigate(_finding())
+    })))
+    result = investigate(_finding(), runner=runner)
 
     assert result.state == "new"
     assert result.input_tokens == 23881
@@ -289,25 +276,23 @@ def test_input_tokens_include_cache_reads_and_cache_writes(mock_run):
     assert result.cache_creation_input_tokens == 13285
 
 
-@patch("houston.agent.subprocess.run")
-def test_exit_zero_with_is_error_is_still_incomplete(mock_run):
-    mock_run.return_value = _fake_completed(json.dumps({
+def test_exit_zero_with_is_error_is_still_incomplete():
+    runner = FakeRunner(_outcome(json.dumps({
         "is_error": True, "subtype": "error_during_execution", "result": "",
         "usage": {}, "duration_ms": 900, "total_cost_usd": 0.004,
-    }))
-    result = investigate(_finding())
+    })))
+    result = investigate(_finding(), runner=runner)
     assert result.state == "incomplete"
     assert result.usd == 0.004
 
 
-@patch("houston.agent.subprocess.run")
-def test_successful_result_extracts_cost_and_tokens(mock_run):
-    mock_run.return_value = _fake_completed(json.dumps({
+def test_successful_result_extracts_cost_and_tokens():
+    runner = FakeRunner(_outcome(json.dumps({
         "result": "## Root cause\nfoo",
         "usage": {"input_tokens": 1200, "output_tokens": 340},
         "duration_ms": 8200, "total_cost_usd": 0.011,
-    }))
-    result = investigate(_finding())
+    })))
+    result = investigate(_finding(), runner=runner)
     assert result.state == "new"
     assert result.input_tokens == 1200
     assert result.output_tokens == 340
@@ -315,8 +300,7 @@ def test_successful_result_extracts_cost_and_tokens(mock_run):
     assert result.usd == 0.011
 
 
-@patch("houston.agent.subprocess.run")
-def test_model_and_effort_are_pinned_not_inherited(mock_run):
+def test_model_and_effort_are_pinned_not_inherited():
     """Measured live (2026-09-10, CLI 2.1.267): the same trivial prompt
     through the same subprocess shape cost $0.3915 on the operator's
     inherited default (`claude-opus-5[1m]` @ effort xhigh) and $0.0777 on
@@ -324,49 +308,46 @@ def test_model_and_effort_are_pinned_not_inherited(mock_run):
     0.50` is priced against a setting this repo does not control, and three
     real findings died in `error_max_budget_usd` having spent $2.41
     (ADR-0023)."""
-    mock_run.return_value = _fake_completed(json.dumps(
+    runner = FakeRunner(_outcome(json.dumps(
         {"result": "ok", "usage": {}, "duration_ms": 10, "total_cost_usd": 0.0}
-    ))
-    investigate(_finding())
-    cmd = mock_run.call_args.args[0]
+    )))
+    investigate(_finding(), runner=runner)
+    cmd = runner.calls[0].argv
 
     assert cmd[cmd.index("--model") + 1] == "sonnet"
     assert cmd[cmd.index("--effort") + 1] == "medium"
 
 
-@patch("houston.agent.subprocess.run")
-def test_claude_effort_env_var_cannot_reprice_the_run(mock_run):
-    mock_run.return_value = _fake_completed(json.dumps(
+def test_claude_effort_env_var_cannot_reprice_the_run():
+    runner = FakeRunner(_outcome(json.dumps(
         {"result": "ok", "usage": {}, "duration_ms": 10, "total_cost_usd": 0.0}
-    ))
+    )))
     with patch.dict("os.environ", {"CLAUDE_EFFORT": "max"}):
-        investigate(_finding())
-    assert "CLAUDE_EFFORT" not in mock_run.call_args.kwargs["env"]
+        investigate(_finding(), runner=runner)
+    assert "CLAUDE_EFFORT" not in runner.calls[0].env
 
 
-@patch("houston.agent.subprocess.run")
-def test_billed_model_comes_from_the_envelope_not_the_alias(mock_run):
+def test_billed_model_comes_from_the_envelope_not_the_alias():
     """`--model sonnet` is an alias; the report has to record what was
     actually billed, because `usd` is uninterpretable without it."""
-    mock_run.return_value = _fake_completed(json.dumps(
+    runner = FakeRunner(_outcome(json.dumps(
         {"result": "ok", "usage": {}, "duration_ms": 10, "total_cost_usd": 0.05,
          "modelUsage": {"claude-sonnet-5": {"costUSD": 0.05}}}
-    ))
-    result = investigate(_finding())
+    )))
+    result = investigate(_finding(), runner=runner)
     assert result.model == "claude-sonnet-5"
 
 
-@patch("houston.agent.subprocess.run")
-def test_budget_death_before_any_billed_request_falls_back_to_the_alias(mock_run):
+def test_budget_death_before_any_billed_request_falls_back_to_the_alias():
     """One of the three findings in the ADR-0023 run recorded $0.5139 with
     an all-zero usage block and no `modelUsage` — the run died before the
     envelope named a model. Recording nothing there would lose the only
     field that explains the spend."""
-    mock_run.return_value = _fake_completed(
+    runner = FakeRunner(_outcome(
         json.dumps({"is_error": True, "subtype": "error_max_budget_usd",
                     "duration_ms": 7523, "total_cost_usd": 0.51388725, "usage": {}}),
         returncode=1, stderr="",
-    )
-    result = investigate(_finding(), model="opus")
+    ))
+    result = investigate(_finding(), model="opus", runner=runner)
     assert result.state == "incomplete"
     assert result.model == "opus"

@@ -2,7 +2,6 @@
 tools, resolves service to repo via front-matter or body scan, versions
 branches on retry, and records cost on both success and failure."""
 import json
-import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -14,12 +13,12 @@ from houston.fix_agent import (
     load_service_repos,
     resolve_repo,
 )
+from houston.model_runner import ModelOutcome
+from tests.fake_runner import FakeRunner
 
 
-def _fake_completed(stdout: str, returncode: int = 0, stderr: str = ""):
-    return subprocess.CompletedProcess(
-        args=[], returncode=returncode, stdout=stdout, stderr=stderr,
-    )
+def _outcome(stdout: str, returncode: int = 0, stderr: str = "") -> ModelOutcome:
+    return ModelOutcome(returncode=returncode, stdout=stdout, stderr=stderr)
 
 
 GOOD_PAYLOAD = json.dumps({
@@ -88,25 +87,24 @@ def test_extract_pr_url_none_when_absent():
 @patch("houston.fix_agent._cleanup_worktree")
 @patch("houston.fix_agent._prepare_worktree")
 @patch("houston.fix_agent._count_existing_attempts", return_value=0)
-@patch("houston.fix_agent.subprocess.run")
-def test_claudecode_stripped_from_env(mock_run, mock_count, mock_prep, mock_clean):
+def test_claudecode_stripped_from_env(mock_count, mock_prep, mock_clean):
     mock_prep.return_value = (Path("/tmp/wt"), "houston/fix/et-test")
-    mock_run.return_value = _fake_completed(GOOD_PAYLOAD)
+    runner = FakeRunner(_outcome(GOOD_PAYLOAD))
     with patch.dict("os.environ", {"CLAUDECODE": "1"}):
-        fix("et-test", "report text", "https://github.com/org/repo/issues/1", REPO_INFO)
-    passed_env = mock_run.call_args.kwargs["env"]
-    assert "CLAUDECODE" not in passed_env
+        fix("et-test", "report text", "https://github.com/org/repo/issues/1", REPO_INFO,
+            runner=runner)
+    assert "CLAUDECODE" not in runner.calls[0].env
 
 
 @patch("houston.fix_agent._cleanup_worktree")
 @patch("houston.fix_agent._prepare_worktree")
 @patch("houston.fix_agent._count_existing_attempts", return_value=0)
-@patch("houston.fix_agent.subprocess.run")
-def test_allowed_tools_are_code_tools(mock_run, mock_count, mock_prep, mock_clean):
+def test_allowed_tools_are_code_tools(mock_count, mock_prep, mock_clean):
     mock_prep.return_value = (Path("/tmp/wt"), "houston/fix/et-test")
-    mock_run.return_value = _fake_completed(GOOD_PAYLOAD)
-    fix("et-test", "report text", "https://github.com/org/repo/issues/1", REPO_INFO)
-    cmd = mock_run.call_args.args[0]
+    runner = FakeRunner(_outcome(GOOD_PAYLOAD))
+    fix("et-test", "report text", "https://github.com/org/repo/issues/1", REPO_INFO,
+        runner=runner)
+    cmd = runner.calls[0].argv
     idx = cmd.index("--allowedTools")
     assert cmd[idx + 1] == ALLOWED_TOOLS
     assert "Bash" in cmd[idx + 1]
@@ -117,23 +115,23 @@ def test_allowed_tools_are_code_tools(mock_run, mock_count, mock_prep, mock_clea
 @patch("houston.fix_agent._cleanup_worktree")
 @patch("houston.fix_agent._prepare_worktree")
 @patch("houston.fix_agent._count_existing_attempts", return_value=0)
-@patch("houston.fix_agent.subprocess.run")
-def test_cwd_is_worktree(mock_run, mock_count, mock_prep, mock_clean):
+def test_cwd_is_worktree(mock_count, mock_prep, mock_clean):
     wt = Path("/tmp/fake-worktree")
     mock_prep.return_value = (wt, "houston/fix/et-test")
-    mock_run.return_value = _fake_completed(GOOD_PAYLOAD)
-    fix("et-test", "report text", "https://github.com/org/repo/issues/1", REPO_INFO)
-    assert mock_run.call_args.kwargs["cwd"] == str(wt)
+    runner = FakeRunner(_outcome(GOOD_PAYLOAD))
+    fix("et-test", "report text", "https://github.com/org/repo/issues/1", REPO_INFO,
+        runner=runner)
+    assert runner.calls[0].cwd == wt
 
 
 @patch("houston.fix_agent._cleanup_worktree")
 @patch("houston.fix_agent._prepare_worktree")
 @patch("houston.fix_agent._count_existing_attempts", return_value=0)
-@patch("houston.fix_agent.subprocess.run")
-def test_successful_fix_extracts_pr_url(mock_run, mock_count, mock_prep, mock_clean):
+def test_successful_fix_extracts_pr_url(mock_count, mock_prep, mock_clean):
     mock_prep.return_value = (Path("/tmp/wt"), "houston/fix/et-test")
-    mock_run.return_value = _fake_completed(GOOD_PAYLOAD)
-    result = fix("et-test", "report text", "https://github.com/org/repo/issues/1", REPO_INFO)
+    runner = FakeRunner(_outcome(GOOD_PAYLOAD))
+    result = fix("et-test", "report text", "https://github.com/org/repo/issues/1", REPO_INFO,
+                 runner=runner)
     assert result.state == "pr_open"
     assert result.pr_url == "https://github.com/Medprev/medprev-web-app/pull/42"
     assert result.usd == 2.15
@@ -142,16 +140,16 @@ def test_successful_fix_extracts_pr_url(mock_run, mock_count, mock_prep, mock_cl
 @patch("houston.fix_agent._cleanup_worktree")
 @patch("houston.fix_agent._prepare_worktree")
 @patch("houston.fix_agent._count_existing_attempts", return_value=0)
-@patch("houston.fix_agent.subprocess.run")
-def test_no_pr_url_means_incomplete(mock_run, mock_count, mock_prep, mock_clean):
+def test_no_pr_url_means_incomplete(mock_count, mock_prep, mock_clean):
     mock_prep.return_value = (Path("/tmp/wt"), "houston/fix/et-test")
     payload = json.dumps({
         "result": "I could not find the code to fix.",
         "usage": {"input_tokens": 3000, "output_tokens": 500},
         "duration_ms": 20000, "total_cost_usd": 1.0,
     })
-    mock_run.return_value = _fake_completed(payload)
-    result = fix("et-test", "report text", "https://github.com/org/repo/issues/1", REPO_INFO)
+    runner = FakeRunner(_outcome(payload))
+    result = fix("et-test", "report text", "https://github.com/org/repo/issues/1", REPO_INFO,
+                 runner=runner)
     assert result.state == "incomplete"
     assert result.pr_url is None
     assert result.usd == 1.0
@@ -160,12 +158,11 @@ def test_no_pr_url_means_incomplete(mock_run, mock_count, mock_prep, mock_clean)
 @patch("houston.fix_agent._cleanup_worktree")
 @patch("houston.fix_agent._prepare_worktree")
 @patch("houston.fix_agent._count_existing_attempts", return_value=0)
-@patch("houston.fix_agent.subprocess.run")
-def test_timeout_produces_incomplete(mock_run, mock_count, mock_prep, mock_clean):
+def test_timeout_produces_incomplete(mock_count, mock_prep, mock_clean):
     mock_prep.return_value = (Path("/tmp/wt"), "houston/fix/et-test")
-    mock_run.side_effect = subprocess.TimeoutExpired(cmd=["claude"], timeout=600)
+    runner = FakeRunner(ModelOutcome(returncode=None, stdout="", stderr="", timed_out=True))
     result = fix("et-test", "report text", "https://github.com/org/repo/issues/1",
-                 REPO_INFO, timeout_s=600)
+                 REPO_INFO, timeout_s=600, runner=runner)
     assert result.state == "incomplete"
     assert "timed out" in result.error
     assert result.duration_s == 600.0
@@ -174,11 +171,11 @@ def test_timeout_produces_incomplete(mock_run, mock_count, mock_prep, mock_clean
 @patch("houston.fix_agent._cleanup_worktree")
 @patch("houston.fix_agent._prepare_worktree")
 @patch("houston.fix_agent._count_existing_attempts", return_value=0)
-@patch("houston.fix_agent.subprocess.run")
-def test_nonzero_exit_without_pr_produces_incomplete(mock_run, mock_count, mock_prep, mock_clean):
+def test_nonzero_exit_without_pr_produces_incomplete(mock_count, mock_prep, mock_clean):
     mock_prep.return_value = (Path("/tmp/wt"), "houston/fix/et-test")
-    mock_run.return_value = _fake_completed("", returncode=1, stderr="CLI error")
-    result = fix("et-test", "report text", "https://github.com/org/repo/issues/1", REPO_INFO)
+    runner = FakeRunner(_outcome("", returncode=1, stderr="CLI error"))
+    result = fix("et-test", "report text", "https://github.com/org/repo/issues/1", REPO_INFO,
+                 runner=runner)
     assert result.state == "incomplete"
     assert result.pr_url is None
 
@@ -186,12 +183,11 @@ def test_nonzero_exit_without_pr_produces_incomplete(mock_run, mock_count, mock_
 @patch("houston.fix_agent._cleanup_worktree")
 @patch("houston.fix_agent._prepare_worktree")
 @patch("houston.fix_agent._count_existing_attempts", return_value=0)
-@patch("houston.fix_agent.subprocess.run")
-def test_nonzero_exit_with_pr_url_is_pr_open(mock_run, mock_count, mock_prep, mock_clean):
+def test_nonzero_exit_with_pr_url_is_pr_open(mock_count, mock_prep, mock_clean):
     """The agent may create the PR then hit the budget limit — exit 1 but
     a real PR exists. The PR URL is the strongest signal."""
     mock_prep.return_value = (Path("/tmp/wt"), "houston/fix/et-test")
-    mock_run.return_value = _fake_completed(
+    runner = FakeRunner(_outcome(
         json.dumps({
             "is_error": True,
             "subtype": "error_max_budget_usd",
@@ -200,8 +196,9 @@ def test_nonzero_exit_with_pr_url_is_pr_open(mock_run, mock_count, mock_prep, mo
             "duration_ms": 300000, "total_cost_usd": 3.0,
         }),
         returncode=1, stderr="",
-    )
-    result = fix("et-test", "report text", "https://github.com/org/repo/issues/1", REPO_INFO)
+    ))
+    result = fix("et-test", "report text", "https://github.com/org/repo/issues/1", REPO_INFO,
+                 runner=runner)
     assert result.state == "pr_open"
     assert result.pr_url == "https://github.com/Medprev/medprev-web-app/pull/99"
     assert result.usd == 3.0
@@ -210,11 +207,11 @@ def test_nonzero_exit_with_pr_url_is_pr_open(mock_run, mock_count, mock_prep, mo
 @patch("houston.fix_agent._cleanup_worktree")
 @patch("houston.fix_agent._prepare_worktree")
 @patch("houston.fix_agent._count_existing_attempts", return_value=2)
-@patch("houston.fix_agent.subprocess.run")
-def test_retry_increments_branch_version(mock_run, mock_count, mock_prep, mock_clean):
+def test_retry_increments_branch_version(mock_count, mock_prep, mock_clean):
     mock_prep.return_value = (Path("/tmp/wt"), "houston/fix/et-test-v3")
-    mock_run.return_value = _fake_completed(GOOD_PAYLOAD)
-    result = fix("et-test", "report text", "https://github.com/org/repo/issues/1", REPO_INFO)
+    runner = FakeRunner(_outcome(GOOD_PAYLOAD))
+    result = fix("et-test", "report text", "https://github.com/org/repo/issues/1", REPO_INFO,
+                 runner=runner)
     mock_prep.assert_called_once_with(Path("/tmp/fake-repo"), "et-test", 3)
     assert result.branch == "houston/fix/et-test-v3"
 
@@ -222,42 +219,42 @@ def test_retry_increments_branch_version(mock_run, mock_count, mock_prep, mock_c
 @patch("houston.fix_agent._cleanup_worktree")
 @patch("houston.fix_agent._prepare_worktree")
 @patch("houston.fix_agent._count_existing_attempts", return_value=0)
-@patch("houston.fix_agent.subprocess.run")
-def test_cleanup_runs_even_on_timeout(mock_run, mock_count, mock_prep, mock_clean):
+def test_cleanup_runs_even_on_timeout(mock_count, mock_prep, mock_clean):
     mock_prep.return_value = (Path("/tmp/wt"), "houston/fix/et-test")
-    mock_run.side_effect = subprocess.TimeoutExpired(cmd=["claude"], timeout=5)
-    fix("et-test", "report text", "https://github.com/org/repo/issues/1", REPO_INFO)
+    runner = FakeRunner(ModelOutcome(returncode=None, stdout="", stderr="", timed_out=True))
+    fix("et-test", "report text", "https://github.com/org/repo/issues/1", REPO_INFO,
+        runner=runner)
     mock_clean.assert_called_once()
 
 
 @patch("houston.fix_agent._cleanup_worktree")
 @patch("houston.fix_agent._prepare_worktree")
 @patch("houston.fix_agent._count_existing_attempts", return_value=0)
-@patch("houston.fix_agent.subprocess.run")
-def test_report_markdown_passed_as_prompt_context(mock_run, mock_count, mock_prep, mock_clean):
+def test_report_markdown_passed_as_prompt_context(mock_count, mock_prep, mock_clean):
     mock_prep.return_value = (Path("/tmp/wt"), "houston/fix/et-test")
-    mock_run.return_value = _fake_completed(GOOD_PAYLOAD)
+    runner = FakeRunner(_outcome(GOOD_PAYLOAD))
     report_text = "---\nfingerprint: et-test\n---\n## Causa raiz\nBug in city.api.mjs"
-    fix("et-test", report_text, "https://github.com/org/repo/issues/1", REPO_INFO)
-    prompt = mock_run.call_args.args[0][-1]
+    fix("et-test", report_text, "https://github.com/org/repo/issues/1", REPO_INFO,
+        runner=runner)
+    prompt = runner.calls[0].argv[-1]
     assert "Bug in city.api.mjs" in prompt
 
 
 @patch("houston.fix_agent._cleanup_worktree")
 @patch("houston.fix_agent._prepare_worktree")
 @patch("houston.fix_agent._count_existing_attempts", return_value=0)
-@patch("houston.fix_agent.subprocess.run")
-def test_model_and_effort_are_pinned_not_inherited(mock_run, mock_count, mock_prep, mock_clean):
+def test_model_and_effort_are_pinned_not_inherited(mock_count, mock_prep, mock_clean):
     """Same failure mode as the investigation agent (ADR-0023): without
     `--model`, this run's $3.00 cap is priced against whatever model the
     operator last selected in their own Claude Code session."""
     mock_prep.return_value = (Path("/tmp/wt"), "houston/fix/et-test")
-    mock_run.return_value = _fake_completed(GOOD_PAYLOAD)
-    fix("et-test", "report text", "https://github.com/org/repo/issues/1", REPO_INFO)
-    cmd = mock_run.call_args.args[0]
+    runner = FakeRunner(_outcome(GOOD_PAYLOAD))
+    fix("et-test", "report text", "https://github.com/org/repo/issues/1", REPO_INFO,
+        runner=runner)
+    cmd = runner.calls[0].argv
 
     assert cmd[cmd.index("--model") + 1] == "sonnet"
     # Writing a fix earns more effort than describing one, but it is still
     # a value this repo chooses, not one it inherits.
     assert cmd[cmd.index("--effort") + 1] == "high"
-    assert "CLAUDE_EFFORT" not in mock_run.call_args.kwargs["env"]
+    assert "CLAUDE_EFFORT" not in runner.calls[0].env
