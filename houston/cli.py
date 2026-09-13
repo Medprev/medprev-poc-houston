@@ -1,4 +1,11 @@
-"""houston — CLI entrypoint. `python -m houston.cli <command>`."""
+"""houston — CLI entrypoint. `python -m houston.cli <command>`.
+
+Argparse, wiring, and printing only -- the use cases themselves live in
+houston/pipeline.py (Move C, ADR-0032). The three `gh` subprocess calls
+(`active_gh_account`, `create_issue`, the fix-PR issue comment) stay here
+rather than moving into the pipeline: they're plumbing to an external
+tool, the same reason the five `git` calls in fix_agent.py stayed put
+during Move B."""
 import argparse
 import re
 import subprocess
@@ -9,118 +16,44 @@ from houston.agent import DEFAULT_MAX_BUDGET_USD as AGENT_DEFAULT_BUDGET
 from houston.agent import DEFAULT_MODEL as AGENT_DEFAULT_MODEL
 from houston.agent import investigate as agent_investigate
 from houston.collector import collect
-from houston.dedup import (
-    already_reported,
-    cap,
-    filter_needing_investigation,
-    filter_new,
-    needs_investigation,
-)
 from houston.fix_agent import DEFAULT_EFFORT as FIX_DEFAULT_EFFORT
 from houston.fix_agent import DEFAULT_MODEL as FIX_DEFAULT_MODEL
 from houston.fix_agent import fix as agent_fix
 from houston.fix_agent import resolve_repo
-from houston.frontmatter import (
-    QUARANTINED_STATE,
-    Report,
-    read_report,
-    write_report,
-)
 from houston.metrics import BLOCKING_STATES, can_close_phase, compute, load_all_reports
-from houston.report_store import DEFAULT_STORE
-
-# Both headings appear in the corpus: the prompt asks for the Portuguese one,
-# the first reports on disk used the English one.
-_ISSUE_BODY_HEADINGS = ("## Corpo da issue", "## Issue body")
+from houston.model_runner import DEFAULT_RUNNER
+from houston.pipeline import (
+    PipelineError,
+    build_promote_command,
+    fix_report,
+    investigate_findings,
+    plan_run,
+    promote_report,
+    seed,
+)
 
 ISSUE_REPO = "Medprev/medprev-product-backlog"
 ISSUE_LABEL = "AIOPS"
 ISSUE_ACCOUNT = "carlacurymed"
 
-# Text the report renderer is supposed to have replaced: the collection
-# window's own field names, and the timestamp markers of ADR-0022. One left
-# raw means the body still carries a placeholder, and a shared backlog is
-# not where that gets noticed.
-_UNEXPANDED_MARKERS = ("window_from", "window_to", "{{ts:")
-
-
-def _unfence(text: str) -> str:
-    """Strips a wrapping ``` fence. The model tends to fence the issue-body
-    section, and `gh issue create --body` would then file an issue whose
-    whole 5W2H content renders as one literal code block."""
-    if not text.startswith("```"):
-        return text
-    lines = text.splitlines()
-    closing = next(
-        (i for i in range(len(lines) - 1, 0, -1) if lines[i].strip().startswith("```")),
-        None,
-    )
-    if closing is None:
-        return text
-    return "\n".join(lines[1:closing]).strip()
-
-
-def extract_issue_body(body: str) -> str:
-    """Pulls the ready-to-paste issue body out of a report body. Falls back
-    to the whole report when neither heading is present, so a malformed
-    report still prints something a human can edit."""
-    section = body
-    for heading in _ISSUE_BODY_HEADINGS:
-        if heading in body:
-            section = body.split(heading, 1)[1]
-            break
-    return _unfence(section.strip())
-
 
 def cmd_seed(args: argparse.Namespace) -> int:
-    """Records pre-existing debt as state: seeded, investigating nothing.
-    This is the one-time bootstrap so the backlog that existed before this
-    tool did doesn't get treated as new signal on day one."""
-    # Seeding writes a report for anything that has none, so that is
-    # exactly the set worth the per-finding detail call.
-    findings = collect(
-        window_hours=args.window_hours,
-        should_enrich=lambda fingerprint: not already_reported(fingerprint),
-    )
-    new_findings = filter_new(findings)
-    written, quarantined = 0, 0
-    for finding in new_findings:
-        report = Report.from_finding(finding, state="seeded", body=(
-            "Semeado na primeira rodada — dívida pré-existente, ainda não investigada. "
-            "Este achado já tinha atividade antes do Houston começar a rastreá-lo."
-        ))
-        result = write_report(report)
-        if result.written:
-            written += 1
-        else:
-            quarantined += 1
-            print(f"  quarantined {finding.fingerprint}: {result.pii_hits}", file=sys.stderr)
-    print(f"seeded {written} reports ({len(findings)} findings, "
-          f"{len(findings) - len(new_findings)} already had a report, "
-          f"{quarantined} quarantined)")
+    outcome = seed(collect, window_hours=args.window_hours)
+    for fingerprint, hits in outcome.quarantined:
+        print(f"  quarantined {fingerprint}: {hits}", file=sys.stderr)
+    print(f"seeded {outcome.written} reports ({outcome.findings} findings, "
+          f"{outcome.already_reported} already had a report, "
+          f"{len(outcome.quarantined)} quarantined)")
     return 0
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    """Collects, dedups, and caps — prints what would be investigated.
-    Does not invoke the agent yet (E4); that step costs Claude Code usage
-    quota per ADR-0001 and is run deliberately, not on every `run`.
-
-    "Needs investigation" includes findings with no report yet AND
-    existing reports still in state: seeded/incomplete -- a seeded report
-    has no real evidence/cause, and treating "has a file" as "done
-    forever" meant it could never get one (ADR-0010)."""
-    findings = collect(
-        window_hours=args.window_hours, should_enrich=needs_investigation,
-    )
-    new_findings = filter_needing_investigation(findings)
-    kept, dropped = cap(new_findings, max_findings=args.max_findings)
-    print(f"{len(findings)} findings total, {len(new_findings)} needing investigation, "
-          f"{len(kept)} to investigate, {dropped} dropped by cap")
-    for f in kept:
+    plan = plan_run(collect, window_hours=args.window_hours, max_findings=args.max_findings)
+    print(f"{plan.total} findings total, {plan.needing} needing investigation, "
+          f"{len(plan.kept)} to investigate, {plan.dropped} dropped by cap")
+    for f in plan.kept:
         print(f"  {f.fingerprint}  {f.service}  {f.reason}  count={f.observed_count}")
     return 0
-
 
 
 def cmd_metrics(args: argparse.Namespace) -> int:
@@ -157,80 +90,43 @@ def cmd_metrics(args: argparse.Namespace) -> int:
     return 0
 
 
-
 def cmd_investigate(args: argparse.Namespace) -> int:
     """Runs the E4 agent for real, one claude -p subprocess per finding.
-    Costs money/quota per ADR-0001 -- default cap is deliberately small.
-    Never fabricates a result: a timeout or failure writes state:
-    incomplete, not a guessed report.
+    Costs money/quota per ADR-0001 -- default cap is deliberately small."""
+    def on_start(i, total, finding):
+        print(f"  [{i}/{total}] {finding.fingerprint} ({finding.service}, "
+              f"{finding.reason})...", end=" ", flush=True)
 
-    Targets findings needing investigation (no report yet, or an existing
-    report still state: seeded/incomplete) -- not just brand-new signal.
-    A seeded report is overwritten with the real investigation; ADR-0010."""
-    findings = collect(
-        window_hours=args.window_hours, should_enrich=needs_investigation,
+    run = investigate_findings(
+        collect, agent_investigate, resolve_repo,
+        window_hours=args.window_hours, max_findings=args.max_findings,
+        max_budget_usd=args.max_budget_usd, timeout_s=args.timeout_s,
+        model=args.model, effort=args.effort, runner=DEFAULT_RUNNER,
+        on_start=on_start,
     )
-    new_findings = filter_needing_investigation(findings)
-    kept, dropped = cap(new_findings, max_findings=args.max_findings)
-    if not kept:
+    if not run.plan.kept:
         print("nothing needs investigation")
         return 0
 
-    print(f"investigating {len(kept)} of {len(new_findings)} findings needing it "
-          f"({dropped} dropped by cap) -- {args.model} @ effort {args.effort}, "
+    print(f"investigating {len(run.plan.kept)} of {run.plan.needing} findings needing it "
+          f"({run.plan.dropped} dropped by cap) -- {args.model} @ effort {args.effort}, "
           f"max ${args.max_budget_usd} each, {args.timeout_s}s timeout each")
-    total_usd = 0.0
-    for i, finding in enumerate(kept, 1):
-        print(f"  [{i}/{len(kept)}] {finding.fingerprint} ({finding.service}, "
-              f"{finding.reason})...", end=" ", flush=True)
-        target_repo = (resolve_repo(finding.service) or {}).get("repo")
-        result = agent_investigate(
-            finding, max_budget_usd=args.max_budget_usd, timeout_s=args.timeout_s,
-            target_repo=target_repo, model=args.model, effort=args.effort,
-        )
-        total_usd += result.usd
-        if result.warnings:
-            print(f"\n    WARNING: unresolved timestamp marker(s): {result.warnings}",
+    for outcome in run.outcomes:
+        if outcome.warnings:
+            print(f"\n    WARNING: unresolved timestamp marker(s): {outcome.warnings}",
                   file=sys.stderr)
-        if result.state == "incomplete":
-            report = Report.from_finding(finding, state="incomplete", body=(
-                f"Investigação não foi concluída: {result.error}"
-            ))
-        else:
-            report = Report.from_finding(finding, state="new", body=result.body)
-        report.cost.input_tokens = result.input_tokens
-        report.cost.output_tokens = result.output_tokens
-        report.cost.cache_read_input_tokens = result.cache_read_input_tokens
-        report.cost.cache_creation_input_tokens = result.cache_creation_input_tokens
-        report.cost.duration_s = result.duration_s
-        report.cost.usd = result.usd
-        report.cost.model = result.model
-        write_result = write_report(report)
+        write_result = outcome.write
         if write_result.written:
-            print(f"${result.usd:.4f}, {result.state}")
+            print(f"${outcome.usd:.4f}, {outcome.state}")
         elif write_result.record_path:
-            print(f"QUARANTINED ({write_result.pii_hits}), ${result.usd:.4f} "
+            print(f"QUARANTINED ({write_result.pii_hits}), ${outcome.usd:.4f} "
                   f"recorded in {write_result.record_path.name}")
         else:
-            print(f"QUARANTINED ({write_result.pii_hits}), ${result.usd:.4f} "
+            print(f"QUARANTINED ({write_result.pii_hits}), ${outcome.usd:.4f} "
                   f"NOT recorded: the stub itself tripped the gate", file=sys.stderr)
 
-    print(f"total spend this run: ${total_usd:.4f}")
+    print(f"total spend this run: ${run.total_usd:.4f}")
     return 0
-
-
-
-def issue_title(report: dict) -> str:
-    """Names the error, in the shape the backlog reads.
-
-    `reason` is the diagnostic label (error_type / monitor name / k8s
-    Reason); novelty is a separate field, so the title names the error
-    instead of naming how new it is."""
-    novelty = "regression: " if report.get("novelty") == "regression" else ""
-    return (
-        f"[{report['source']}] {novelty}{report['reason']} "
-        f"in {report.get('service') or 'unknown service'}"
-    )
 
 
 def active_gh_account() -> str | None:
@@ -246,29 +142,6 @@ def active_gh_account() -> str | None:
         return None
     match = re.search(r"Logged in to \S+ account (\S+)", result.stdout + result.stderr)
     return match.group(1) if match else None
-
-
-def promotion_blockers(report: dict, issue_body: str, account: str | None) -> list[str]:
-    """Everything that must be true before an issue reaches the shared
-    backlog. Each one fails closed: filing is outward-facing, and undoing
-    it means a human closing an issue other people already saw."""
-    blockers = []
-    if account != ISSUE_ACCOUNT:
-        blockers.append(
-            f"active gh account is {account or 'unreadable'}, not {ISSUE_ACCOUNT} "
-            f"-- run: gh auth switch --user {ISSUE_ACCOUNT}"
-        )
-    if report.get("issue"):
-        blockers.append(f"report already carries issue: {report['issue']}")
-    if report.get("state") == QUARANTINED_STATE:
-        blockers.append(
-            "report is quarantined -- its body is the redaction record, "
-            "not an investigation (ADR-0015)"
-        )
-    raw = [marker for marker in _UNEXPANDED_MARKERS if marker in issue_body]
-    if raw:
-        blockers.append(f"issue body carries unexpanded markers: {', '.join(raw)}")
-    return blockers
 
 
 def create_issue(title: str, body: str) -> str | None:
@@ -299,119 +172,72 @@ def cmd_promote(args: argparse.Namespace) -> int:
     removes is the typing -- filing the issue and writing `issue:` +
     `state: promoted` back, the step that is easy to forget precisely
     because it is separate from the command (ADR-0028)."""
-    path = DEFAULT_STORE.path(args.fingerprint)
-    if not path.exists():
-        print(f"no report at {path}", file=sys.stderr)
+    try:
+        command = build_promote_command(args.fingerprint)
+    except PipelineError as exc:
+        print(str(exc), file=sys.stderr)
         return 1
-    report = read_report(path)
-    text = path.read_text()
-    _, _, body = text.split("---", 2)
-
-    issue_body = extract_issue_body(body)
-    title = issue_title(report)
 
     if not args.create:
-        escaped_body = issue_body.replace("'", "'\\''")
+        escaped_body = command.issue_body.replace("'", "'\\''")
         command_lines = [
             f"gh issue create --repo {ISSUE_REPO} \\",
-            f"  --title '{title}' \\",
+            f"  --title '{command.title}' \\",
             f"  --label {ISSUE_LABEL} \\",
             f"  --body '{escaped_body}'",
         ]
         print("\n".join(command_lines))
         print(f"\n# run the command above, or re-run with --create to file the "
-              f"issue and record it in {path} automatically")
+              f"issue and record it in {command.path} automatically")
         return 0
 
-    blockers = promotion_blockers(report, issue_body, active_gh_account())
-    if blockers:
-        for blocker in blockers:
-            print(f"refusing to promote: {blocker}", file=sys.stderr)
+    try:
+        url = promote_report(
+            args.fingerprint, account=active_gh_account(), required_account=ISSUE_ACCOUNT,
+            create_issue_fn=create_issue,
+        )
+    except PipelineError as exc:
+        print(f"refusing to promote: {exc}", file=sys.stderr)
         return 1
 
-    url = create_issue(title, issue_body)
-    if url is None:
-        print("gh issue create failed -- report left untouched", file=sys.stderr)
-        return 1
-
-    update_front_matter(path, issue=url, state="promoted")
     print(f"issue: {url}")
-    print(f"{path}: state: promoted")
+    print(f"{command.path}: state: promoted")
     return 0
 
 
 def cmd_fix(args: argparse.Namespace) -> int:
     """Creates a PR that fixes a promoted finding. Costs money — runs a
     claude -p subprocess with code tools against the target service's repo."""
-    path = DEFAULT_STORE.path(args.fingerprint)
-    if not path.exists():
-        print(f"no report at {path}", file=sys.stderr)
+    def notify(issue_url: str, message: str) -> None:
+        subprocess.run(
+            ["gh", "issue", "comment", issue_url, "--body", message],
+            check=False, capture_output=True,
+        )
+
+    try:
+        outcome = fix_report(
+            args.fingerprint, issue=args.issue, fix_fn=agent_fix,
+            resolve_repo_fn=resolve_repo, runner=DEFAULT_RUNNER,
+            max_budget_usd=args.max_budget_usd, timeout_s=args.timeout_s,
+            model=args.model, effort=args.effort, notify_fn=notify,
+        )
+    except PipelineError as exc:
+        print(str(exc), file=sys.stderr)
         return 1
 
-    report = read_report(path)
-    if report.get("state") != "promoted":
-        print(f"report state is '{report.get('state')}', not 'promoted'", file=sys.stderr)
-        return 1
-
-    issue_url = args.issue or report.get("issue")
-    if not issue_url:
-        print("no issue URL: pass --issue <url> or set the issue: field in the report",
-              file=sys.stderr)
-        return 1
-
-    text = path.read_text()
-    service = report.get("service")
-    repo_info = resolve_repo(service, text)
-    if repo_info is None:
-        print(f"service '{service}' does not map to a fixable repo", file=sys.stderr)
-        return 1
-
+    result = outcome.result
     print(f"fixing {args.fingerprint}")
-    print(f"  repo: {repo_info['repo']}  path: {repo_info['path']}")
-    print(f"  issue: {issue_url}")
+    print(f"  repo: {outcome.repo_info['repo']}  path: {outcome.repo_info['path']}")
+    print(f"  issue: {outcome.issue_url}")
     print(f"  model: {args.model} @ effort {args.effort}")
     print(f"  budget: ${args.max_budget_usd}  timeout: {args.timeout_s}s")
-
-    result = agent_fix(
-        fingerprint=args.fingerprint,
-        report_markdown=text,
-        issue_url=issue_url,
-        repo_info=repo_info,
-        max_budget_usd=args.max_budget_usd,
-        timeout_s=args.timeout_s,
-        model=args.model,
-        effort=args.effort,
-    )
-
     print(f"  state: {result.state}  cost: ${result.usd:.4f}")
     if result.pr_url:
         print(f"  PR: {result.pr_url}")
-        subprocess.run(
-            ["gh", "issue", "comment", issue_url, "--body",
-             f"PR aberto pelo Houston fix agent: {result.pr_url}"],
-            check=False, capture_output=True,
-        )
-        update_front_matter(path, fix_pr=result.pr_url, fix_state=result.state)
     elif result.error:
         print(f"  error: {result.error}", file=sys.stderr)
-        update_front_matter(path, fix_pr=None, fix_state="incomplete")
 
     return 0 if result.pr_url else 1
-
-
-def update_front_matter(path, **fields):
-    """Writes structured fields back into an existing report.
-
-    Values here are code-owned -- a URL `gh` printed, a state this CLI
-    chose -- never model text, so this does not re-run the PII gate over
-    a body that already passed it at write time."""
-    import yaml as _yaml
-    text = path.read_text()
-    _, front_raw, body = text.split("---", 2)
-    fm = _yaml.safe_load(front_raw)
-    fm.update(fields)
-    yaml_block = _yaml.safe_dump(fm, sort_keys=False, allow_unicode=True)
-    path.write_text(f"---\n{yaml_block}---{body}")
 
 
 def main(argv: list[str] | None = None) -> int:
