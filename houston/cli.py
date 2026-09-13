@@ -414,7 +414,7 @@ def update_front_matter(path, **fields):
     path.write_text(f"---\n{yaml_block}---{body}")
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="houston")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -462,7 +462,7 @@ def main() -> int:
                        choices=["low", "medium", "high", "xhigh", "max"])
     fix_p.set_defaults(func=cmd_fix)
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     return args.func(args)
 
 
