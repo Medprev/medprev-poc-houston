@@ -19,9 +19,18 @@ from houston.report_store import DEFAULT_STORE
 @pytest.fixture
 def store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Points every collaborator that defaults to DEFAULT_STORE at an
-    isolated tmp_path. Returns the directory itself, since most existing
-    tests only need to inspect files on disk, not call the store's methods
-    directly."""
+    isolated tmp_path. Returns the directory itself (a Path, not a
+    ReportStore -- passing this fixture where a `store: ReportStore`
+    parameter is expected raises TypeError at the Path.exists()/write_text()
+    call inside, not here), since most existing tests only need to inspect
+    files on disk, not call the store's methods directly.
+
+    Deliberately opt-in, not autouse: `tests/test_report_corpus.py` asserts
+    invariants over the real, committed `reports/` corpus on purpose, and
+    an autouse guard would have to special-case that file. A test that
+    calls write_report()/filter_new()/load_all_reports() without requesting
+    this fixture touches the real reports/ directory -- see ADR-0030's
+    'Bad' section."""
     monkeypatch.setattr(DEFAULT_STORE, "root", tmp_path)
     return tmp_path
 

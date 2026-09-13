@@ -8,11 +8,16 @@ monkeypatching four separate names, and `frontmatter.py` importing from
 of `frontmatter.read_report` to avoid a real import cycle (ADR-0029,
 ADR-0030).
 
-`ReportStore` is the only place a report path under `reports/` gets
-written -- `grep -rn "write_text" houston/` should return only the two
-lines below. `quarantine` is a property, computed on every access from
-`self.root`, which is what makes the import-time-snapshot problem
-disappear by construction rather than by test discipline."""
+`ReportStore` is the intended single place a report *body* reaches
+`reports/` -- write() and write_quarantined() below are the only writers
+this module owns. One exception, out of this module's scope and left
+unchanged by it: `houston/cli.py`'s `update_front_matter` still writes
+`fix_pr`/`fix_state` directly, bypassing both this store and the PII gate,
+because those values are code-owned (a URL `gh` printed, a state the CLI
+chose) rather than model text -- see ADR-0030's "Bad" section. `quarantine`
+is a property, computed on every access from `self.root`, which is what
+makes the import-time-snapshot problem disappear by construction rather
+than by test discipline."""
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -27,8 +32,20 @@ class ReportStore:
     def quarantine(self) -> Path:
         return self.root / ".quarantine"
 
+    @staticmethod
+    def _filename(fingerprint: str) -> str:
+        # Every fingerprint format (et-{issue_id}, mon-{monitor_id}[-{group}],
+        # k8s-{cluster}-{reason}-{namespace}) is meant to be one path
+        # segment. A "/" would silently turn into a directory separator
+        # instead -- a nested, uncreated parent that fails after an
+        # already-paid investigation, invisible to iter_paths' non-recursive
+        # glob on every future run.
+        if "/" in fingerprint or "\\" in fingerprint or fingerprint in ("", ".", ".."):
+            raise ValueError(f"unsafe fingerprint for a report filename: {fingerprint!r}")
+        return f"{fingerprint}.md"
+
     def path(self, fingerprint: str) -> Path:
-        return self.root / f"{fingerprint}.md"
+        return self.root / self._filename(fingerprint)
 
     def exists(self, fingerprint: str) -> bool:
         return self.path(fingerprint).exists()
@@ -41,7 +58,7 @@ class ReportStore:
 
     def write_quarantined(self, fingerprint: str, markdown: str) -> Path:
         self.quarantine.mkdir(parents=True, exist_ok=True)
-        path = self.quarantine / f"{fingerprint}.md"
+        path = self.quarantine / self._filename(fingerprint)
         path.write_text(markdown)
         return path
 

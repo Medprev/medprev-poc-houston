@@ -61,9 +61,10 @@ monkeypatch.setattr(DEFAULT_STORE, "root", tmp_path)
 
 `quarantine`, being a property derived from `self.root`, updates automatically; there is no second
 name to patch the way `QUARANTINE_DIR` used to need. `tests/conftest.py`'s `store` fixture does
-exactly this. 12 test call sites across `tests/test_dedup.py`, `tests/test_frontmatter.py`, and
-`tests/test_cli_promote.py` dropped their local monkeypatch helpers (`_use_tmp`, `_write`'s
-`monkeypatch.setattr` lines) in favor of the shared fixture — no assertion in any of them changed.
+exactly this. 23 test functions across `tests/test_dedup.py` (3), `tests/test_frontmatter.py` (7),
+and `tests/test_cli_promote.py` (13) now take the shared `store` fixture instead of their own
+local monkeypatch helpers (`_use_tmp`, `_write`'s `monkeypatch.setattr` lines) — no assertion in
+any of them changed. Counted by walking each file's `FunctionDef` nodes for a `store` parameter.
 
 ## Consequences
 
@@ -95,11 +96,20 @@ exactly this. 12 test call sites across `tests/test_dedup.py`, `tests/test_front
   `cmd_*` functions to accept and forward a `store` parameter each — real churn for a PoC, deferred
   to the use-case extraction (Move C, tracked in #29) where those functions are being rewritten
   anyway.
-- `update_front_matter` (`houston/cli.py`, the function `cmd_fix` uses to write `fix_pr`/`fix_state`
-  back into a report) still resolves its own path and writes directly, bypassing `write_report()`
-  and the PII gate — unchanged from before this PR. That bypass is deliberate (the values it writes
-  are code-owned: a URL `gh` printed, a state the CLI chose, never model text) and is out of scope
-  here; this PR only changed *how a path is resolved*, not the write-path contract.
+- `update_front_matter` (`houston/cli.py`) still resolves its own path and writes directly,
+  bypassing `write_report()` and the PII gate — unchanged from before this PR. It is used on
+  **both** the always-used promote path (`cmd_promote`'s `--create`, writing `issue` and
+  `state: promoted` — exactly the field `metrics.py`'s `false_positive_rate` and
+  `can_close_phase()` read) and the optional fix path (`cmd_fix`, writing `fix_pr`/`fix_state`).
+  That bypass is deliberate (the values it writes are code-owned: a URL `gh` printed, a state the
+  CLI chose, never model text) and is out of scope here; this PR only changed *how a path is
+  resolved*, not the write-path contract. Worth flagging precisely because it sits on the
+  metrics-critical path, not just the optional feature.
+- `tests/conftest.py`'s `store` fixture is opt-in, not autouse. A test that calls
+  `write_report()`/`filter_new()`/`load_all_reports()` without requesting it touches the real,
+  git-tracked `reports/` directory instead of failing loudly. Evaluated and rejected for this PR: an
+  autouse guard would have to special-case `tests/test_report_corpus.py`, which asserts invariants
+  over that real corpus on purpose. Left as a known gap rather than a rushed guard.
 
 ### Follow-up
 

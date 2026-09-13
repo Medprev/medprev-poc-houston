@@ -1,15 +1,10 @@
 """E3 — dedup, seed, cap. reports/{fingerprint}.md existing means already
 handled; that is the entire dedup mechanism, no separate index needed."""
 from collections import defaultdict
-from pathlib import Path
 
 from houston.frontmatter import read_report
 from houston.models import Finding
 from houston.report_store import DEFAULT_STORE, ReportStore
-
-
-def report_path(fingerprint: str, store: ReportStore = DEFAULT_STORE) -> Path:
-    return store.path(fingerprint)
 
 
 def already_reported(fingerprint: str, store: ReportStore = DEFAULT_STORE) -> bool:
