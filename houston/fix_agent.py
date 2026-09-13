@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from houston.agent import _error_text, _input_tokens, _payload_or_none
+from houston.model_runner import DEFAULT_RUNNER, ModelRun, ModelRunner
 from houston.service_repos import (  # noqa: F401 -- re-exported for callers/tests
     load_service_repos,
     resolve_repo,
@@ -179,6 +180,7 @@ def fix(
     timeout_s: int = DEFAULT_TIMEOUT_S,
     model: str = DEFAULT_MODEL,
     effort: str = DEFAULT_EFFORT,
+    runner: ModelRunner = DEFAULT_RUNNER,
 ) -> FixResult:
     repo_path = Path(repo_info["path"]).expanduser()
     repo_name = repo_info["repo"]
@@ -213,26 +215,26 @@ def fix(
     ]
 
     try:
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True,
-            env=env, timeout=timeout_s, cwd=str(worktree_dir), check=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        partial = _payload_or_none(exc.stdout)
+        outcome = runner.run(ModelRun(
+            argv=cmd, env=env, timeout_s=timeout_s, cwd=worktree_dir,
+        ))
+    finally:
+        _cleanup_worktree(repo_path, worktree_dir)
+
+    if outcome.timed_out:
+        partial = _payload_or_none(outcome.stdout)
         return _result(
             partial, "incomplete", branch=branch,
             error=_error_text(partial, "", prefix=f"timed out after {timeout_s}s"),
             fallback_duration_s=float(timeout_s),
         )
-    finally:
-        _cleanup_worktree(repo_path, worktree_dir)
 
-    payload = _payload_or_none(proc.stdout)
+    payload = _payload_or_none(outcome.stdout)
 
     if payload is None:
         return _result(
             None, "incomplete", branch=branch,
-            error=f"non-JSON stdout: {proc.stdout[:500]}",
+            error=f"non-JSON stdout: {outcome.stdout[:500]}",
         )
 
     result_text = payload.get("result", "")
@@ -244,10 +246,10 @@ def fix(
     if pr_url:
         return _result(payload, "pr_open", pr_url=pr_url, branch=branch)
 
-    if proc.returncode != 0 or payload.get("is_error") or not result_text:
+    if outcome.returncode != 0 or payload.get("is_error") or not result_text:
         return _result(
             payload, "incomplete", branch=branch,
-            error=_error_text(payload, proc.stderr),
+            error=_error_text(payload, outcome.stderr),
         )
 
     return _result(payload, "incomplete", branch=branch,

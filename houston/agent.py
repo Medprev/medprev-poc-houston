@@ -23,10 +23,10 @@ explained the error sat in the same trace.
 """
 import json
 import os
-import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from houston.model_runner import DEFAULT_RUNNER, ModelRun, ModelRunner
 from houston.models import Finding
 from houston.timestamps import canonicalize, format_ms
 
@@ -239,13 +239,16 @@ def _load_allowlist() -> str:
     return ",".join(names)
 
 
-def _payload_or_none(stdout: str | bytes | None) -> dict | None:
+def _payload_or_none(stdout: str | None) -> dict | None:
     """The CLI prints its JSON envelope on stdout even when it exits
-    non-zero, so this runs on every path, not just the success one."""
+    non-zero, so this runs on every path, not just the success one.
+
+    Every caller passes ModelOutcome.stdout, which model_runner.py already
+    decodes from bytes if the subprocess layer ever captured it that way
+    (ADR-0031) -- decoding here too would be dead code duplicating that
+    rule in a second place."""
     if not stdout:
         return None
-    if isinstance(stdout, bytes):
-        stdout = stdout.decode("utf-8", errors="replace")
     try:
         parsed = json.loads(stdout)
     except json.JSONDecodeError:
@@ -338,6 +341,7 @@ def investigate(
     target_repo: str | None = None,
     model: str = DEFAULT_MODEL,
     effort: str = DEFAULT_EFFORT,
+    runner: ModelRunner = DEFAULT_RUNNER,
 ) -> InvestigationResult:
     env = {**os.environ}
     env.pop("CLAUDECODE", None)  # allow nesting claude -p inside a session
@@ -384,13 +388,12 @@ def investigate(
         "raw": finding.raw,
     })
 
-    try:
-        proc = subprocess.run(
-            cmd, input=stdin_payload, capture_output=True, text=True,
-            env=env, timeout=timeout_s, check=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        partial = _payload_or_none(exc.stdout)
+    outcome = runner.run(ModelRun(
+        argv=cmd, stdin=stdin_payload, env=env, timeout_s=timeout_s,
+    ))
+
+    if outcome.timed_out:
+        partial = _payload_or_none(outcome.stdout)
         return _result(
             partial, "incomplete",
             error=_error_text(partial, "", prefix=f"timed out after {timeout_s}s"),
@@ -398,21 +401,21 @@ def investigate(
             requested_model=model,
         )
 
-    payload = _payload_or_none(proc.stdout)
+    payload = _payload_or_none(outcome.stdout)
 
-    if proc.returncode != 0:
-        return _result(payload, "incomplete", error=_error_text(payload, proc.stderr),
+    if outcome.returncode != 0:
+        return _result(payload, "incomplete", error=_error_text(payload, outcome.stderr),
                        requested_model=model)
 
     if payload is None:
         return _result(
             None, "incomplete",
-            error=f"non-JSON stdout: {proc.stdout[:500]}",
+            error=f"non-JSON stdout: {outcome.stdout[:500]}",
             requested_model=model,
         )
 
     if payload.get("is_error") or not payload.get("result"):
-        return _result(payload, "incomplete", error=_error_text(payload, proc.stderr),
+        return _result(payload, "incomplete", error=_error_text(payload, outcome.stderr),
                        requested_model=model)
 
     return _result(payload, "new", requested_model=model)

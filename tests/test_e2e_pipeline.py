@@ -1,9 +1,15 @@
 """End-to-end proof that `main(argv)` produces the right files on disk
 (ADR-0029) -- the boundary none of the planned moves (ReportStore, model
 runner port, use-cases out of cli.py) touches. Every collaborator below is
-stubbed at the process edge (`requests`, stdlib `subprocess`), never at a
-`houston.*` internal, so this test survives all three moves unedited: that
-is the whole point of writing it before any of them land.
+stubbed at the process edge (`requests`, stdlib `subprocess`), so every
+test body and assertion below is unedited by Move A (ADR-0030) and Move B
+(ADR-0031) alike. The one thing that DID need editing, honestly: Move B
+moved the `subprocess.run` call site from `houston.agent` into
+`houston.model_runner`, and `unittest.mock.patch`/`monkeypatch.setattr`
+target names in the *calling* module's namespace, not the object's origin
+-- so the patch target string here changed from
+"houston.agent.subprocess.run" to "houston.model_runner.subprocess.run" in
+that PR. No assertion changed.
 
 Datadog is served from the same recorded fixtures `test_collector.py`
 already uses, routed to the right source by the POST body's `filter.query`
@@ -126,7 +132,7 @@ def test_seed_is_idempotent_second_run_writes_nothing_new(store):
 
 def test_investigate_writes_one_report_per_capped_finding(store, monkeypatch, capsys):
     fake_claude = _FakeClaude()
-    monkeypatch.setattr("houston.agent.subprocess.run", fake_claude)
+    monkeypatch.setattr("houston.model_runner.subprocess.run", fake_claude)
 
     exit_code = main([
         "investigate", "--window-hours", "96", "--max-findings", "1",
@@ -147,7 +153,7 @@ def test_investigate_writes_one_report_per_capped_finding(store, monkeypatch, ca
 
 def test_investigate_is_idempotent_second_run_investigates_nothing_new(store, monkeypatch):
     fake_claude = _FakeClaude()
-    monkeypatch.setattr("houston.agent.subprocess.run", fake_claude)
+    monkeypatch.setattr("houston.model_runner.subprocess.run", fake_claude)
 
     main(["investigate", "--window-hours", "96", "--max-findings", "5"])
     calls_after_first_run = len(fake_claude.calls)
@@ -169,7 +175,7 @@ def test_seed_then_investigate_overwrites_the_seeded_report(store, monkeypatch):
     assert all("state: seeded" in (store / name).read_text() for name in seeded)
 
     fake_claude = _FakeClaude()
-    monkeypatch.setattr("houston.agent.subprocess.run", fake_claude)
+    monkeypatch.setattr("houston.model_runner.subprocess.run", fake_claude)
     main(["investigate", "--window-hours", "96", "--max-findings", "1"])
 
     investigated = [p for p in store.glob("*.md") if "state: new" in p.read_text()]
@@ -180,7 +186,7 @@ def test_investigate_a_timed_out_run_writes_incomplete_and_stays_in_the_queue(st
     def timeout_stub(cmd, *args, **kwargs):
         raise subprocess.TimeoutExpired(cmd=cmd, timeout=kwargs.get("timeout", 300))
 
-    monkeypatch.setattr("houston.agent.subprocess.run", timeout_stub)
+    monkeypatch.setattr("houston.model_runner.subprocess.run", timeout_stub)
 
     main(["investigate", "--window-hours", "96", "--max-findings", "1"])
 
@@ -195,7 +201,7 @@ def test_investigate_a_timed_out_run_writes_incomplete_and_stays_in_the_queue(st
 
 def test_pii_in_the_agent_body_never_reaches_the_reports_dir(store, monkeypatch):
     fake_claude = _FakeClaude(result="Contato: carla.cury@medprevonline.com relatou.")
-    monkeypatch.setattr("houston.agent.subprocess.run", fake_claude)
+    monkeypatch.setattr("houston.model_runner.subprocess.run", fake_claude)
 
     main(["investigate", "--window-hours", "96", "--max-findings", "1"])
 
