@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 #MISE description="Run the test suite (no network -- fixtures + mocked subprocess calls)"
 #USAGE arg "[pattern]" help="Optional pytest -k filter"
+#USAGE flag "--cov" help="Also report line+branch coverage for houston/"
 set -e
 # `python -m pytest`, not bare `pytest` -- module-execution prepends the repo
 # root to sys.path, which is what makes `from houston.x import y` resolve.
-# There's no installed package (no pyproject.toml/setup.py) and no
-# conftest.py, so bare `pytest` can't find the houston package at all.
-python -m pytest ${usage_pattern:+-k "$usage_pattern"}
+# There's no installed package (no pyproject.toml/setup.py), and
+# tests/conftest.py only gets pytest's own import-mode to add `tests/` to
+# sys.path (which it already does for every test file), not the repo root
+# -- so bare `pytest` still can't find the houston package at all.
+python -m pytest ${usage_pattern:+-k "$usage_pattern"} \
+  ${usage_cov:+--cov=houston --cov-branch --cov-report=term-missing}
