@@ -22,9 +22,9 @@ sys.path.insert(0, str(ROOT))
 from houston.collector import collect
 from houston.config import Config
 from houston.datadog_client import Window, event_explorer_url
-from houston.dedup import REPORTS_DIR
 from houston.frontmatter import Cost, Report, read_report, write_report
 from houston.models import Finding
+from houston.report_store import DEFAULT_STORE
 
 _LEGACY_NOVELTY = {"new", "regression"}
 
@@ -76,7 +76,7 @@ def main() -> None:
     site = Config.from_env().dd_site
     updated, skipped_no_finding = 0, 0
 
-    for path in sorted(REPORTS_DIR.glob("*.md")):
+    for path in DEFAULT_STORE.iter_paths():
         finding = findings_by_fp.get(path.stem)
         if finding is None:
             skipped_no_finding += 1

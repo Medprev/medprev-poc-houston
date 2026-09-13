@@ -31,14 +31,8 @@ foo
 """
 
 
-def _write(tmp_path, monkeypatch, fingerprint, body, reason="BranchLaboratoryNotFound",
+def _write(store, fingerprint, body, reason="BranchLaboratoryNotFound",
            regressed=False, state="new", issue=None):
-    import houston.dedup as dedup_mod
-    import houston.frontmatter as fm
-    monkeypatch.setattr(fm, "REPORTS_DIR", tmp_path)
-    monkeypatch.setattr(dedup_mod, "REPORTS_DIR", tmp_path)
-    monkeypatch.setattr(fm, "QUARANTINE_DIR", tmp_path / ".quarantine")
-
     finding = Finding(
         fingerprint=fingerprint, source="error_tracking", query="env:production",
         service="medprev-rest-api", reason=reason, first_seen_ms=1, last_seen_ms=2,
@@ -46,7 +40,7 @@ def _write(tmp_path, monkeypatch, fingerprint, body, reason="BranchLaboratoryNot
     )
     report = Report.from_finding(finding, state=state, body=body)
     write_report(replace(report, issue=issue))
-    return tmp_path / f"{fingerprint}.md"
+    return store / f"{fingerprint}.md"
 
 
 def _args(fingerprint, create=False):
@@ -75,11 +69,11 @@ def _fake_gh(account="carlacurymed", create_returncode=0):
 
 
 def test_promote_without_create_prints_the_command_and_runs_nothing(
-    tmp_path, monkeypatch, capsys,
+    store, capsys,
 ):
     """Filing is opt-in: the bare command touches neither GitHub nor the
     report, so a mistyped fingerprint costs nothing (ADR-0028)."""
-    path = _write(tmp_path, monkeypatch, "et-promote-test", _PT_BODY)
+    path = _write(store, "et-promote-test", _PT_BODY)
 
     with patch("houston.cli.subprocess.run") as mock_run:
         cmd_promote(_args("et-promote-test"))
@@ -94,12 +88,12 @@ def test_promote_without_create_prints_the_command_and_runs_nothing(
 
 
 def test_promote_sends_only_the_issue_body_under_the_portuguese_heading(
-    tmp_path, monkeypatch, capsys,
+    store, capsys,
 ):
     """Regression test: the code split on "## Issue body" while the prompt
     emits "## Corpo da issue", so `--body` carried the entire report --
     root cause, timeline, evidence and all (ADR-0019)."""
-    _write(tmp_path, monkeypatch, "et-pt", _PT_BODY)
+    _write(store, "et-pt", _PT_BODY)
     cmd_promote(_args("et-pt"))
 
     out = capsys.readouterr().out
@@ -107,10 +101,10 @@ def test_promote_sends_only_the_issue_body_under_the_portuguese_heading(
     assert "O serviço medprev-rest-api falha" not in out
 
 
-def test_promote_unwraps_a_fenced_issue_body(tmp_path, monkeypatch, capsys):
+def test_promote_unwraps_a_fenced_issue_body(store, capsys):
     """The model tends to fence the section; `gh issue create` would then
     file an issue whose whole 5W2H content renders as one code block."""
-    _write(tmp_path, monkeypatch, "et-fenced", _FENCED_BODY)
+    _write(store, "et-fenced", _FENCED_BODY)
     cmd_promote(_args("et-fenced"))
 
     body_arg = capsys.readouterr().out.split("--body '", 1)[1]
@@ -118,11 +112,11 @@ def test_promote_unwraps_a_fenced_issue_body(tmp_path, monkeypatch, capsys):
     assert "**O quê**: a rota quebra." in body_arg
 
 
-def test_promote_title_names_the_error_not_its_novelty(tmp_path, monkeypatch, capsys):
+def test_promote_title_names_the_error_not_its_novelty(store, capsys):
     """Regression test: the title read "[error_tracking] regression in
     medprev-rest-api" for every regressed finding, because `reason` held
     the novelty instead of the error type (ADR-0019)."""
-    _write(tmp_path, monkeypatch, "et-title", _PT_BODY,
+    _write(store, "et-title", _PT_BODY,
            reason="BranchLaboratoryNotFoundException", regressed=True)
     cmd_promote(_args("et-title"))
 
@@ -157,20 +151,17 @@ def test_extract_issue_body_keeps_h3_subsections_intact():
     assert "Corrigir Y no repo Z." in extracted
 
 
-def test_promote_reports_missing_fingerprint(tmp_path, monkeypatch, capsys):
-    import houston.dedup as dedup_mod
-    monkeypatch.setattr(dedup_mod, "REPORTS_DIR", tmp_path)
-
+def test_promote_reports_missing_fingerprint(store, capsys):
     exit_code = cmd_promote(_args("et-does-not-exist"))
     assert exit_code == 1
 
 
 def test_promote_create_files_the_issue_and_records_it_in_the_report(
-    tmp_path, monkeypatch, capsys,
+    store, capsys,
 ):
     """The whole point: the two manual steps after the command -- filing
     and writing the URL back -- happen in the same gesture as the decision."""
-    path = _write(tmp_path, monkeypatch, "et-create", _PT_BODY)
+    path = _write(store, "et-create", _PT_BODY)
     run, calls = _fake_gh()
 
     with patch("houston.cli.subprocess.run", side_effect=run):
@@ -192,10 +183,10 @@ def test_promote_create_files_the_issue_and_records_it_in_the_report(
     assert _ISSUE_URL in capsys.readouterr().out
 
 
-def test_promote_create_keeps_the_body_out_of_a_shell(tmp_path, monkeypatch):
+def test_promote_create_keeps_the_body_out_of_a_shell(store):
     """Arguments go through argv, so an apostrophe in the body is data,
     not quoting -- the '\\'' escaping belongs to the printed form only."""
-    path = _write(tmp_path, monkeypatch, "et-quote", _PT_BODY.replace("quebra", "n'ao"))
+    path = _write(store, "et-quote", _PT_BODY.replace("quebra", "n'ao"))
     run, calls = _fake_gh()
 
     with patch("houston.cli.subprocess.run", side_effect=run):
@@ -209,11 +200,11 @@ def test_promote_create_keeps_the_body_out_of_a_shell(tmp_path, monkeypatch):
 
 
 def test_promote_create_refuses_the_personal_github_account(
-    tmp_path, monkeypatch, capsys,
+    store, capsys,
 ):
     """A 404 on a private Medprev repo is almost always the active account
     flipped to the personal one -- check it before filing, not after."""
-    path = _write(tmp_path, monkeypatch, "et-account", _PT_BODY)
+    path = _write(store, "et-account", _PT_BODY)
     run, calls = _fake_gh(account="carlacazv")
 
     with patch("houston.cli.subprocess.run", side_effect=run):
@@ -226,11 +217,11 @@ def test_promote_create_refuses_the_personal_github_account(
 
 
 def test_promote_create_refuses_a_report_that_already_carries_an_issue(
-    tmp_path, monkeypatch, capsys,
+    store, capsys,
 ):
     """Re-running promote would otherwise file the same finding twice in a
     backlog other teams read."""
-    _write(tmp_path, monkeypatch, "et-dup", _PT_BODY, state="promoted", issue=_ISSUE_URL)
+    _write(store, "et-dup", _PT_BODY, state="promoted", issue=_ISSUE_URL)
     run, calls = _fake_gh()
 
     with patch("houston.cli.subprocess.run", side_effect=run):
@@ -241,12 +232,12 @@ def test_promote_create_refuses_a_report_that_already_carries_an_issue(
     assert _ISSUE_URL in capsys.readouterr().err
 
 
-def test_promote_create_refuses_an_unexpanded_placeholder(tmp_path, monkeypatch, capsys):
+def test_promote_create_refuses_an_unexpanded_placeholder(store, capsys):
     """Seen for real on 11/09/2026: the rendered body kept `window_from` /
     `window_to` literal, and only a human reading the printed command
     caught it."""
     body = _PT_BODY.replace("a rota quebra", "quebra entre `window_from` e `window_to`")
-    path = _write(tmp_path, monkeypatch, "et-marker", body)
+    path = _write(store, "et-marker", body)
     run, calls = _fake_gh()
 
     with patch("houston.cli.subprocess.run", side_effect=run):
@@ -259,10 +250,10 @@ def test_promote_create_refuses_an_unexpanded_placeholder(tmp_path, monkeypatch,
     assert "window_from" in err and "window_to" in err
 
 
-def test_promote_create_refuses_a_quarantined_report(tmp_path, monkeypatch, capsys):
+def test_promote_create_refuses_a_quarantined_report(store, capsys):
     """A quarantined report's body is the redaction record, not an
     investigation (ADR-0015) -- there is no issue body to file."""
-    _write(tmp_path, monkeypatch, "et-quar", "Relatório retido pelo gate de PII.",
+    _write(store, "et-quar", "Relatório retido pelo gate de PII.",
            state="quarantined")
     run, calls = _fake_gh()
 
@@ -275,11 +266,11 @@ def test_promote_create_refuses_a_quarantined_report(tmp_path, monkeypatch, caps
 
 
 def test_promote_create_leaves_the_report_untouched_when_gh_fails(
-    tmp_path, monkeypatch, capsys,
+    store, capsys,
 ):
     """No issue means no promotion: recording state: promoted without a URL
     would count a finding that nobody can act on toward the FP rate."""
-    path = _write(tmp_path, monkeypatch, "et-ghfail", _PT_BODY)
+    path = _write(store, "et-ghfail", _PT_BODY)
     run, _ = _fake_gh(create_returncode=1)
 
     with patch("houston.cli.subprocess.run", side_effect=run):

@@ -15,7 +15,6 @@ from houston.dedup import (
     filter_needing_investigation,
     filter_new,
     needs_investigation,
-    report_path,
 )
 from houston.fix_agent import DEFAULT_EFFORT as FIX_DEFAULT_EFFORT
 from houston.fix_agent import DEFAULT_MODEL as FIX_DEFAULT_MODEL
@@ -28,6 +27,7 @@ from houston.frontmatter import (
     write_report,
 )
 from houston.metrics import BLOCKING_STATES, can_close_phase, compute, load_all_reports
+from houston.report_store import DEFAULT_STORE
 
 # Both headings appear in the corpus: the prompt asks for the Portuguese one,
 # the first reports on disk used the English one.
@@ -299,7 +299,7 @@ def cmd_promote(args: argparse.Namespace) -> int:
     removes is the typing -- filing the issue and writing `issue:` +
     `state: promoted` back, the step that is easy to forget precisely
     because it is separate from the command (ADR-0028)."""
-    path = report_path(args.fingerprint)
+    path = DEFAULT_STORE.path(args.fingerprint)
     if not path.exists():
         print(f"no report at {path}", file=sys.stderr)
         return 1
@@ -343,7 +343,7 @@ def cmd_promote(args: argparse.Namespace) -> int:
 def cmd_fix(args: argparse.Namespace) -> int:
     """Creates a PR that fixes a promoted finding. Costs money — runs a
     claude -p subprocess with code tools against the target service's repo."""
-    path = report_path(args.fingerprint)
+    path = DEFAULT_STORE.path(args.fingerprint)
     if not path.exists():
         print(f"no report at {path}", file=sys.stderr)
         return 1
