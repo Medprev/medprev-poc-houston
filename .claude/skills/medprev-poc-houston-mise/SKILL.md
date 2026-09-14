@@ -24,9 +24,12 @@ venv consistently.
   free.
 - `mise run seed --window-hours 96` -- record pre-existing findings as `state: seeded`, no investigation.
   Free.
-- `mise run investigate --max-findings 5 --max-budget-usd 0.50` -- run the real agent (`claude -p`
-  subprocess) on capped new findings, write real reports. **Spends real Claude Code usage quota** --
-  ~$0.24-0.40/finding measured live (ADR-0001, ADR-0006). Default cap is deliberately small.
+- `mise run investigate --max-findings 5` -- run the real agent (`claude -p` subprocess) on capped
+  new findings, write real reports. **Spends real Claude Code usage quota.** Pass
+  `--max-budget-usd` only to override; the per-finding cap has one source of truth,
+  `houston/agent.py:DEFAULT_MAX_BUDGET_USD`, and the task forwards the flag only when you set one --
+  a number pinned in a doc is exactly the drift ADR-0024 measured and fixed. `mise run metrics`
+  reports what runs have actually cost.
 - `mise run promote <fingerprint>` -- print (never run) a ready `gh issue create` for one report.
 - `mise run metrics` -- false-positive rate, cost percentiles, and whether the phase can close (refuses
   while any report is `state: new`).

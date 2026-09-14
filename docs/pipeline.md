@@ -15,7 +15,7 @@ flowchart TD
     end
 
     subgraph INVESTIGATE["3 — Investigar (claude -p, read-only)"]
-        G --> H["claude -p<br>--allowedTools Datadog MCP read<br>--disallowedTools Bash,Write,Edit<br>budget $0.50 · timeout 300s"]
+        G --> H["claude -p<br>--allowedTools Datadog MCP read<br>--disallowedTools Bash,Write,Edit<br>budget $0.75 · timeout 300s"]
         H --> I[PII gate]
         I -->|limpo| J["reports/fingerprint.md<br>state: new"]
         I -->|PII detectado| K["reports/.quarantine/<br>state: quarantined"]
@@ -63,7 +63,7 @@ flowchart TD
 
     subgraph METRICS["9 — Metricas"]
         CC & DD & N --> EE["houston metrics"]
-        EE --> FF["FP rate = discarded / decided<br>fix rate = merged / attempted<br>spend total, mean, p50, p95"]
+        EE --> FF["FP rate = discarded / decided<br>spend total, mean, p50, p95<br>percentis de token e duracao"]
     end
 
     style COLLECT fill:#e8f4fd,stroke:#1a73e8

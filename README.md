@@ -11,7 +11,7 @@ O pipeline tem duas fases de agente e três decisões humanas:
    ┌─────────────────┐      ┌──────────────────────┐    ┌─────────────────────┐
    │  Datadog API v2  │      │  claude -p (read-only)│    │  claude -p (code)   │
    │  Error Tracking  │──┐   │  Datadog MCP tools    │    │  Bash/Read/Write    │
-   │  Kubernetes      │  │   │  $0.50 budget         │    │  $3.00 budget       │
+   │  Kubernetes      │  │   │  $0.75 budget         │    │  $3.00 budget       │
    │  Monitor alerts  │  │   │  300s timeout         │    │  600s timeout       │
    └─────────────────┘  │   └──────────────────────┘    └─────────────────────┘
                         │            ▲                           ▲
@@ -51,7 +51,10 @@ O pipeline tem duas fases de agente e três decisões humanas:
 
 8. **Review do PR** — o squad dono do serviço revisa o PR. O agente nunca faz merge — o PR é o gate humano.
 
-9. **Métricas** — `houston metrics` computa: FP rate (discarded / decididos), fix rate (merged / tentados), custo total e por finding.
+9. **Métricas** — `houston metrics` computa, lendo só o front-matter dos relatórios: taxa de falso
+   positivo (`discarded` / decididos), gasto total, médio, p50 e p95 (e por estado), percentis de
+   token e duração, e se a fase pode fechar. O custo do fix agent não entra: ele é impresso pelo
+   comando e não gravado em lugar nenhum.
 
 ### O que cada agente pode fazer
 
@@ -61,7 +64,7 @@ O pipeline tem duas fases de agente e três decisões humanas:
 | **Bloqueado** | Bash, Write, Edit | Datadog MCP tools |
 | **Escopo** | Lê sinais do Datadog | Navega e edita código-fonte |
 | **Saída** | Relatório Markdown | Branch + PR no GitHub |
-| **Budget** | $0.50 | $3.00 |
+| **Budget** | $0.75 | $3.00 |
 | **Gate** | PII gate + humano decide estado | Humano revisa PR |
 
 ## Setup
@@ -84,17 +87,17 @@ Task runner: [mise](https://mise.jdx.dev). `mise run <task>`, ou `mise tasks` pa
 | `mise run seed` | Registra achados pré-existentes como `state: seeded` | Não |
 | `mise run investigate` | Roda o agente de investigação nos achados novos | **Sim** — ~$0.30–0.42/finding |
 | `mise run promote <fp>` | Imprime o `gh issue create` pronto; com `--create`, abre a issue e grava a URL no report | Não |
-| `mise run fix <fp> --issue <url>` | Roda o agente de correção, abre PR | **Sim** — ~$2–3/fix |
-| `mise run metrics` | FP rate, fix rate, custo, prontidão de fase | Não |
+| `mise run fix <fp> --issue <url>` | Roda o agente de correção, abre PR | **Sim** — cap $3.00/fix; o gasto real não é gravado |
+| `mise run metrics` | FP rate, gasto (total/médio/p50/p95), percentis de token e duração, prontidão de fase | Não |
 
 ## Ciclo diário (E7)
 
 ```bash
 mise run run                          # ver o que apareceu
-mise run investigate                  # investigar top 5 (~$1.90)
+mise run investigate                  # investigar top 5 (cap $0.75/finding)
 # ler os reports, decidir state: promoted ou discarded
 mise run promote <fingerprint>        # conferir o comando/corpo que seria aberto
 mise run promote <fingerprint> --create   # abrir a issue e gravar a URL no report
-mise run fix <fp> --issue <url>       # corrigir via PR (~$3.00)
-mise run metrics                      # conferir FP rate e fix rate
+mise run fix <fp> --issue <url>       # corrigir via PR (cap $3.00)
+mise run metrics                      # conferir FP rate e gasto
 ```
