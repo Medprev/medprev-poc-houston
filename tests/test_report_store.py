@@ -1,7 +1,7 @@
 """Direct proof of ReportStore's contract (ADR-0030): the intended single
 writer of a report body under reports/ (write/write_quarantined -- see
 ADR-0030's "Bad" section for the one deliberate exception,
-cli.py's update_front_matter), and the single mutable object every
+pipeline.py's update_front_matter), and the single mutable object every
 collaborator's `store: ReportStore = DEFAULT_STORE` default references --
 which is what lets tests isolate everything by mutating one attribute on
 one object instead of patching a name per module."""

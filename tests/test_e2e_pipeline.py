@@ -19,6 +19,7 @@ would fall through to a real subprocess call, which is deliberately not
 provided so a forgotten stub fails loudly instead of touching the network.
 """
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -149,6 +150,53 @@ def test_investigate_writes_one_report_per_capped_finding(store, monkeypatch, ca
     assert len(fake_claude.calls) == 1
     out = capsys.readouterr().out
     assert "total spend this run:" in out
+
+
+def test_investigate_announces_the_tier_before_the_first_paid_call(store, monkeypatch, capsys):
+    """The assertion tests/test_cli_investigate.py carried before it was
+    deleted, re-expressed at the boundary: a run priced against a
+    different tier has to say so on stdout while a Ctrl-C still saves
+    money, not after the money is gone (ADR-0023). Ordering is the claim,
+    not presence."""
+    fake_claude = _FakeClaude()
+    monkeypatch.setattr("houston.model_runner.subprocess.run", fake_claude)
+
+    exit_code = main([
+        "investigate", "--window-hours", "96", "--max-findings", "2",
+        "--model", "opus", "--effort", "xhigh", "--max-budget-usd", "0.75",
+    ])
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "opus @ effort xhigh" in out
+    assert out.index("opus @ effort xhigh") < out.index("[1/")
+
+
+def test_each_cost_line_stays_on_its_own_findings_line(store, monkeypatch, capsys):
+    """With --max-findings 5 an operator gets five cost lines; detached
+    from their `[i/N] fingerprint` prefix they cannot be mapped to the
+    finding that spent the money."""
+    fake_claude = _FakeClaude()
+    monkeypatch.setattr("houston.model_runner.subprocess.run", fake_claude)
+
+    main(["investigate", "--window-hours", "96", "--max-findings", "2"])
+
+    out = capsys.readouterr().out
+    priced = [line for line in out.splitlines() if re.search(r"\$\d+\.\d{4}, ", line)]
+    assert len(priced) == 2
+    assert all(re.match(r"\s*\[\d+/\d+\] ", line) for line in priced)
+
+
+def test_investigate_says_so_when_the_queue_is_empty(store, monkeypatch, capsys):
+    fake_claude = _FakeClaude()
+    monkeypatch.setattr("houston.model_runner.subprocess.run", fake_claude)
+    main(["investigate", "--window-hours", "96", "--max-findings", "100"])
+    capsys.readouterr()
+
+    exit_code = main(["investigate", "--window-hours", "96", "--max-findings", "100"])
+
+    assert exit_code == 0
+    assert "nothing needs investigation" in capsys.readouterr().out
 
 
 def test_investigate_is_idempotent_second_run_investigates_nothing_new(store, monkeypatch):

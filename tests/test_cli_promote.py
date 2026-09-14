@@ -6,9 +6,10 @@ from dataclasses import replace
 from subprocess import CompletedProcess
 from unittest.mock import patch
 
-from houston.cli import cmd_promote, extract_issue_body, read_report
-from houston.frontmatter import Report, write_report
+from houston.cli import cmd_promote
+from houston.frontmatter import Report, read_report, write_report
 from houston.models import Finding
+from houston.pipeline import extract_issue_body
 
 _ISSUE_URL = "https://github.com/Medprev/medprev-product-backlog/issues/5483"
 
