@@ -7,15 +7,19 @@ recorded, model/effort forwarded, spend printed) are re-expressed below as
 assertions on the InvestigationRun the pipeline actually returns, plus in
 tests/test_e2e_pipeline.py's end-to-end runs through main(argv).
 
-`cmd_fix` and `cmd_promote --create` had no tests at all before this PR
-(README/ADR-0028 document `--create`'s guards, but nothing exercised
-`promote_report`/`fix_report` directly) -- this file adds the first."""
+`cmd_fix` had no tests at all before this PR -- the largest untested
+function in the package -- and nothing called `promote_report` or
+`fix_report` directly; `cmd_promote --create` was already covered through
+the CLI by seven tests in tests/test_cli_promote.py, which stay."""
+import pytest
+
 from houston.agent import InvestigationResult
 from houston.fix_agent import FixResult
 from houston.frontmatter import Report, read_report, write_report
 from houston.models import Finding
 from houston.pipeline import (
     PipelineError,
+    PromotionBlocked,
     build_promote_command,
     fix_report,
     investigate_findings,
@@ -24,6 +28,7 @@ from houston.pipeline import (
     promotion_blockers,
     seed,
 )
+from houston.report_store import ReportStore
 
 
 def _finding(fp="et-cli-test", **overrides) -> Finding:
@@ -52,6 +57,9 @@ def test_seed_writes_state_seeded_for_every_new_finding(store):
     assert outcome.findings == 1
     assert outcome.already_reported == 0
     assert outcome.quarantined == []
+    # ADR-0010: seeded has to be distinguishable from investigated, or the
+    # finding never re-enters the queue and its $0 cost pollutes metrics.
+    assert read_report(store / "et-cli-test.md")["state"] == "seeded"
 
 
 def test_seed_skips_a_finding_that_already_has_a_report(store):
@@ -157,14 +165,19 @@ def test_model_and_effort_reach_the_agent(store):
             duration_s=1.0, usd=0.01, state="new", model="claude-opus-5",
         )
 
+    runner = object()
     investigate_findings(
         _collect_fn([finding]), investigate_fn, resolve_repo_fn=lambda *a: None,
         window_hours=96, max_findings=5, max_budget_usd="0.50", timeout_s=300,
-        model="opus", effort="xhigh", runner=object(),
+        model="opus", effort="xhigh", runner=runner,
     )
 
     assert received["model"] == "opus"
     assert received["effort"] == "xhigh"
+    # The port of ADR-0031 is only real if the injected runner is the one
+    # that arrives: agent.investigate defaults to DEFAULT_RUNNER, so a
+    # dropped forward would send the real subprocess runner silently.
+    assert received["runner"] is runner
 
 
 def test_on_start_callback_fires_once_per_finding_before_the_agent_call(store):
@@ -233,7 +246,8 @@ def test_promote_report_files_the_issue_and_records_it(store):
     write_report(Report.from_finding(finding, state="new", body=body))
 
     url = promote_report(
-        "et-promote", account="carlacurymed", required_account="carlacurymed",
+        build_promote_command("et-promote"),
+        account="carlacurymed", required_account="carlacurymed",
         create_issue_fn=lambda title, body: "https://github.com/org/repo/issues/9",
     )
 
@@ -254,15 +268,12 @@ def test_promote_report_raises_without_filing_when_blocked(store):
         calls.append((title, body))
         return "https://github.com/org/repo/issues/1"
 
-    try:
+    with pytest.raises(PromotionBlocked):
         promote_report(
-            "et-blocked", account="carlacazv", required_account="carlacurymed",
+            build_promote_command("et-blocked"),
+            account="carlacazv", required_account="carlacurymed",
             create_issue_fn=create_issue_fn,
         )
-    except PipelineError:
-        pass
-    else:
-        raise AssertionError("expected PipelineError")
 
     assert calls == []
 
@@ -348,4 +359,224 @@ def test_fix_report_records_the_pr_and_notifies_the_issue(store):
     ]
     parsed = read_report(store / "et-fix-ok.md")
     assert parsed["fix_pr"] == "https://github.com/org/repo/pull/1"
+    assert parsed["fix_state"] == "pr_open"
+
+
+# ---------------------------------------------------------------------------
+# the seams the three moves introduced: store, runner, and the callbacks that
+# keep operator-facing output attached to the step that produced it
+# ---------------------------------------------------------------------------
+
+def test_an_explicit_store_is_where_the_report_lands(store, tmp_path):
+    """ADR-0030's seam is advertised in every use-case signature; the
+    conftest `store` fixture repoints DEFAULT_STORE in place, so a dropped
+    `store` forward is invisible to every other test in this suite. A
+    caller passing its own ReportStore -- a dry-run directory -- would
+    otherwise write into the real reports/ instead."""
+    other = ReportStore(tmp_path / "elsewhere")
+    other.root.mkdir()
+
+    outcome = seed(_collect_fn([_finding("et-elsewhere")]), window_hours=96, store=other)
+
+    assert outcome.written == 1
+    assert (other.root / "et-elsewhere.md").exists()
+    assert not (store / "et-elsewhere.md").exists()
+
+
+def test_investigation_writes_through_the_store_it_was_given(store, tmp_path):
+    other = ReportStore(tmp_path / "elsewhere")
+    other.root.mkdir()
+
+    def investigate_fn(f, **kwargs):
+        return InvestigationResult(
+            body="## Causa raiz\nfoo", input_tokens=1, output_tokens=1,
+            duration_s=1.0, usd=0.01, state="new",
+        )
+
+    investigate_findings(
+        _collect_fn([_finding("et-store")]), investigate_fn,
+        resolve_repo_fn=lambda *a: None, window_hours=96, max_findings=5,
+        max_budget_usd="0.50", timeout_s=300, model="sonnet", effort="medium",
+        runner=object(), store=other,
+    )
+
+    assert (other.root / "et-store.md").exists()
+    assert not (store / "et-store.md").exists()
+
+
+def test_unresolved_timestamp_warnings_survive_into_the_outcome(store):
+    """ADR-0022: a report written with a raw {{ts:}} placeholder has to
+    warn at the moment it is paid for. The outcome is the only carrier
+    between the agent and that warning."""
+    def investigate_fn(f, **kwargs):
+        return InvestigationResult(
+            body="## Causa raiz\nfoo", input_tokens=1, output_tokens=1,
+            duration_s=1.0, usd=0.01, state="new",
+            warnings=["{{ts:not-a-timestamp}}"],
+        )
+
+    run = investigate_findings(
+        _collect_fn([_finding("et-warn")]), investigate_fn,
+        resolve_repo_fn=lambda *a: None, window_hours=96, max_findings=5,
+        max_budget_usd="0.50", timeout_s=300, model="sonnet", effort="medium",
+        runner=object(),
+    )
+
+    assert run.outcomes[0].warnings == ["{{ts:not-a-timestamp}}"]
+
+
+def test_on_plan_fires_before_the_first_paid_call(store):
+    """The tier/budget announcement ADR-0023 exists for is only a guard if
+    it reaches the operator while a Ctrl-C still saves money."""
+    events = []
+
+    def investigate_fn(f, **kwargs):
+        events.append(("agent", f.fingerprint))
+        return InvestigationResult(
+            body="ok", input_tokens=1, output_tokens=1, duration_s=1.0,
+            usd=0.01, state="new",
+        )
+
+    investigate_findings(
+        _collect_fn([_finding("et-a"), _finding("et-b")]), investigate_fn,
+        resolve_repo_fn=lambda *a: None, window_hours=96, max_findings=5,
+        max_budget_usd="0.50", timeout_s=300, model="sonnet", effort="medium",
+        runner=object(), on_plan=lambda plan: events.append(("plan", len(plan.kept))),
+        on_result=lambda outcome: events.append(("result", outcome.finding.fingerprint)),
+    )
+
+    assert events == [
+        ("plan", 2),
+        ("agent", "et-a"), ("result", "et-a"),
+        ("agent", "et-b"), ("result", "et-b"),
+    ]
+
+
+def test_seed_names_each_quarantined_finding_as_the_gate_catches_it(store):
+    """Batching the quarantine list until the end means an interrupted
+    seed names none of them, and the operator diffs reports/.quarantine/
+    against reports/ by hand (ADR-0004 measured this branch at 22% of a
+    real run)."""
+    # The gate reads the full rendered file, front-matter included
+    # (ADR-0015), which is how a diagnostic label carrying a document
+    # quarantines a report whose body is the fixed seed text.
+    finding = _finding("et-pii", reason="lookup falhou para 123.456.789-09")
+    seen = []
+
+    outcome = seed(
+        _collect_fn([finding]), window_hours=96,
+        on_quarantine=lambda fp, hits: seen.append((fp, hits)),
+    )
+
+    assert outcome.written == 0
+    assert len(outcome.quarantined) == 1
+    assert [fp for fp, _ in seen] == ["et-pii"]
+    assert seen[0][1] == outcome.quarantined[0][1]
+
+
+def test_promotion_blocked_carries_every_blocker_separately(store):
+    """One blocker ends in a copy-pasteable `gh auth switch` command;
+    joining them puts `; ` -- shell syntax -- immediately after it."""
+    finding = _finding("et-two-blockers")
+    write_report(Report.from_finding(
+        finding, state="new", body="## Corpo da issue\nwindow_from ainda cru",
+    ))
+
+    with pytest.raises(PromotionBlocked) as excinfo:
+        promote_report(
+            build_promote_command("et-two-blockers"),
+            account="carlacazv", required_account="carlacurymed",
+            create_issue_fn=lambda title, body: "https://github.com/org/repo/issues/1",
+        )
+
+    assert len(excinfo.value.blockers) == 2
+    assert any("carlacazv" in b for b in excinfo.value.blockers)
+    assert any("window_from" in b for b in excinfo.value.blockers)
+
+
+def test_a_gh_failure_is_not_a_promotion_blocker(store):
+    """`gh` failing happens after the guards passed and after the attempt;
+    labelling it "refusing to promote" tells the operator nothing was
+    filed, which is exactly what they cannot assume."""
+    finding = _finding("et-gh-down")
+    write_report(Report.from_finding(
+        finding, state="new", body="## Corpo da issue\nclean",
+    ))
+
+    with pytest.raises(PipelineError) as excinfo:
+        promote_report(
+            build_promote_command("et-gh-down"),
+            account="carlacurymed", required_account="carlacurymed",
+            create_issue_fn=lambda title, body: None,
+        )
+
+    assert not isinstance(excinfo.value, PromotionBlocked)
+    assert "gh issue create failed" in str(excinfo.value)
+
+
+def _promoted_report(store, fingerprint):
+    write_report(Report.from_finding(
+        _finding(fingerprint, service="medprev-rest-api"), state="promoted",
+        body="## Causa raiz\nfoo",
+    ))
+
+
+def test_fix_discloses_the_resolved_repo_before_the_agent_runs(store):
+    """resolve_repo falls back to scanning the report body, so a report
+    naming a second service can resolve to the wrong repo -- and this
+    agent writes code, pushes a branch and opens a PR. The mapping is only
+    cancellable before the call."""
+    _promoted_report(store, "et-fix-order")
+    events = []
+    received = {}
+
+    def fix_fn(**kwargs):
+        events.append("agent")
+        received.update(kwargs)
+        return FixResult(
+            pr_url="https://github.com/org/repo/pull/1", body="fixed",
+            input_tokens=1, output_tokens=1, duration_s=1.0, usd=1.5,
+            state="pr_open", branch="houston/fix/et-fix-order",
+        )
+
+    runner = object()
+    fix_report(
+        "et-fix-order", issue="https://github.com/org/repo/issues/1", fix_fn=fix_fn,
+        resolve_repo_fn=lambda service, body="": {"repo": "org/repo", "path": "/tmp/fake"},
+        runner=runner, max_budget_usd="3.00", timeout_s=600, model="sonnet",
+        effort="high", on_start=lambda repo_info, url: events.append(repo_info["repo"]),
+    )
+
+    assert events == ["org/repo", "agent"]
+    # Same seam as investigate: fix_agent.fix defaults to DEFAULT_RUNNER,
+    # so a dropped forward reaches the real subprocess runner in silence.
+    assert received["runner"] is runner
+
+
+def test_the_pr_url_is_recorded_before_gh_is_told_about_it(store):
+    """`gh` missing from PATH -- the realistic cron/CI case -- must not be
+    what loses the URL of a PR the agent already pushed and billed for."""
+    _promoted_report(store, "et-fix-notify-fails")
+
+    def fix_fn(**kwargs):
+        return FixResult(
+            pr_url="https://github.com/org/repo/pull/7", body="fixed",
+            input_tokens=1, output_tokens=1, duration_s=1.0, usd=2.9,
+            state="pr_open", branch="houston/fix/et-fix-notify-fails",
+        )
+
+    def notify_fn(url, message):
+        raise FileNotFoundError("gh")
+
+    with pytest.raises(FileNotFoundError):
+        fix_report(
+            "et-fix-notify-fails", issue="https://github.com/org/repo/issues/1",
+            fix_fn=fix_fn,
+            resolve_repo_fn=lambda service, body="": {"repo": "org/repo", "path": "/tmp/fake"},
+            runner=object(), max_budget_usd="3.00", timeout_s=600, model="sonnet",
+            effort="high", notify_fn=notify_fn,
+        )
+
+    parsed = read_report(store / "et-fix-notify-fails.md")
+    assert parsed["fix_pr"] == "https://github.com/org/repo/pull/7"
     assert parsed["fix_state"] == "pr_open"

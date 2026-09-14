@@ -24,6 +24,7 @@ from houston.metrics import BLOCKING_STATES, can_close_phase, compute, load_all_
 from houston.model_runner import DEFAULT_RUNNER
 from houston.pipeline import (
     PipelineError,
+    PromotionBlocked,
     build_promote_command,
     fix_report,
     investigate_findings,
@@ -38,9 +39,10 @@ ISSUE_ACCOUNT = "carlacurymed"
 
 
 def cmd_seed(args: argparse.Namespace) -> int:
-    outcome = seed(collect, window_hours=args.window_hours)
-    for fingerprint, hits in outcome.quarantined:
+    def on_quarantine(fingerprint: str, hits: list[str]) -> None:
         print(f"  quarantined {fingerprint}: {hits}", file=sys.stderr)
+
+    outcome = seed(collect, window_hours=args.window_hours, on_quarantine=on_quarantine)
     print(f"seeded {outcome.written} reports ({outcome.findings} findings, "
           f"{outcome.already_reported} already had a report, "
           f"{len(outcome.quarantined)} quarantined)")
@@ -93,25 +95,18 @@ def cmd_metrics(args: argparse.Namespace) -> int:
 def cmd_investigate(args: argparse.Namespace) -> int:
     """Runs the E4 agent for real, one claude -p subprocess per finding.
     Costs money/quota per ADR-0001 -- default cap is deliberately small."""
+    def on_plan(plan):
+        if not plan.kept:
+            return
+        print(f"investigating {len(plan.kept)} of {plan.needing} findings needing it "
+              f"({plan.dropped} dropped by cap) -- {args.model} @ effort {args.effort}, "
+              f"max ${args.max_budget_usd} each, {args.timeout_s}s timeout each")
+
     def on_start(i, total, finding):
         print(f"  [{i}/{total}] {finding.fingerprint} ({finding.service}, "
               f"{finding.reason})...", end=" ", flush=True)
 
-    run = investigate_findings(
-        collect, agent_investigate, resolve_repo,
-        window_hours=args.window_hours, max_findings=args.max_findings,
-        max_budget_usd=args.max_budget_usd, timeout_s=args.timeout_s,
-        model=args.model, effort=args.effort, runner=DEFAULT_RUNNER,
-        on_start=on_start,
-    )
-    if not run.plan.kept:
-        print("nothing needs investigation")
-        return 0
-
-    print(f"investigating {len(run.plan.kept)} of {run.plan.needing} findings needing it "
-          f"({run.plan.dropped} dropped by cap) -- {args.model} @ effort {args.effort}, "
-          f"max ${args.max_budget_usd} each, {args.timeout_s}s timeout each")
-    for outcome in run.outcomes:
+    def on_result(outcome):
         if outcome.warnings:
             print(f"\n    WARNING: unresolved timestamp marker(s): {outcome.warnings}",
                   file=sys.stderr)
@@ -124,6 +119,17 @@ def cmd_investigate(args: argparse.Namespace) -> int:
         else:
             print(f"QUARANTINED ({write_result.pii_hits}), ${outcome.usd:.4f} "
                   f"NOT recorded: the stub itself tripped the gate", file=sys.stderr)
+
+    run = investigate_findings(
+        collect, agent_investigate, resolve_repo,
+        window_hours=args.window_hours, max_findings=args.max_findings,
+        max_budget_usd=args.max_budget_usd, timeout_s=args.timeout_s,
+        model=args.model, effort=args.effort, runner=DEFAULT_RUNNER,
+        on_plan=on_plan, on_start=on_start, on_result=on_result,
+    )
+    if not run.plan.kept:
+        print("nothing needs investigation")
+        return 0
 
     print(f"total spend this run: ${run.total_usd:.4f}")
     return 0
@@ -193,11 +199,15 @@ def cmd_promote(args: argparse.Namespace) -> int:
 
     try:
         url = promote_report(
-            args.fingerprint, account=active_gh_account(), required_account=ISSUE_ACCOUNT,
+            command, account=active_gh_account(), required_account=ISSUE_ACCOUNT,
             create_issue_fn=create_issue,
         )
+    except PromotionBlocked as exc:
+        for blocker in exc.blockers:
+            print(f"refusing to promote: {blocker}", file=sys.stderr)
+        return 1
     except PipelineError as exc:
-        print(f"refusing to promote: {exc}", file=sys.stderr)
+        print(str(exc), file=sys.stderr)
         return 1
 
     print(f"issue: {url}")
@@ -214,23 +224,26 @@ def cmd_fix(args: argparse.Namespace) -> int:
             check=False, capture_output=True,
         )
 
+    def on_start(repo_info: dict, issue_url: str) -> None:
+        print(f"fixing {args.fingerprint}")
+        print(f"  repo: {repo_info['repo']}  path: {repo_info['path']}")
+        print(f"  issue: {issue_url}")
+        print(f"  model: {args.model} @ effort {args.effort}")
+        print(f"  budget: ${args.max_budget_usd}  timeout: {args.timeout_s}s", flush=True)
+
     try:
         outcome = fix_report(
             args.fingerprint, issue=args.issue, fix_fn=agent_fix,
             resolve_repo_fn=resolve_repo, runner=DEFAULT_RUNNER,
             max_budget_usd=args.max_budget_usd, timeout_s=args.timeout_s,
             model=args.model, effort=args.effort, notify_fn=notify,
+            on_start=on_start,
         )
     except PipelineError as exc:
         print(str(exc), file=sys.stderr)
         return 1
 
     result = outcome.result
-    print(f"fixing {args.fingerprint}")
-    print(f"  repo: {outcome.repo_info['repo']}  path: {outcome.repo_info['path']}")
-    print(f"  issue: {outcome.issue_url}")
-    print(f"  model: {args.model} @ effort {args.effort}")
-    print(f"  budget: ${args.max_budget_usd}  timeout: {args.timeout_s}s")
     print(f"  state: {result.state}  cost: ${result.usd:.4f}")
     if result.pr_url:
         print(f"  PR: {result.pr_url}")

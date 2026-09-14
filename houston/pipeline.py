@@ -36,9 +36,19 @@ from houston.report_store import DEFAULT_STORE, ReportStore
 
 class PipelineError(Exception):
     """An operator-facing refusal: no report at that fingerprint, wrong
-    state, a promotion blocker, a `gh`/agent failure. `cli.py` catches
-    this once and turns it into the exit-code-1 stderr message the six
-    `cmd_*` functions used to print individually."""
+    state, a `gh`/agent failure. `cli.py` turns it into an exit-code-1
+    stderr message."""
+
+
+class PromotionBlocked(PipelineError):
+    """The ADR-0028 fail-closed guards refused, before anything was filed.
+    Carries the blockers as a list because each one is its own
+    operator-facing line -- one of them ends in a copy-pasteable `gh auth
+    switch` command, and joining them puts shell syntax right after it."""
+
+    def __init__(self, blockers: list[str]):
+        super().__init__("; ".join(blockers))
+        self.blockers = blockers
 
 
 CollectFn = Callable[..., list[Finding]]
@@ -156,10 +166,16 @@ class SeedOutcome:
 
 def seed(
     collect_fn: CollectFn, *, window_hours: int, store: ReportStore = DEFAULT_STORE,
+    on_quarantine: Callable[[str, list[str]], None] = lambda *_: None,
 ) -> SeedOutcome:
     """Records pre-existing debt as state: seeded, investigating nothing.
     This is the one-time bootstrap so the backlog that existed before this
-    tool did doesn't get treated as new signal on day one."""
+    tool did doesn't get treated as new signal on day one.
+
+    `on_quarantine` fires per quarantined finding instead of only at the
+    end: an interrupted seed has still named every fingerprint the gate
+    caught, and the alternative is diffing reports/.quarantine/ against
+    reports/ by hand."""
     findings = collect_fn(
         window_hours=window_hours,
         should_enrich=lambda fingerprint: not store.exists(fingerprint),
@@ -177,6 +193,7 @@ def seed(
             written += 1
         else:
             quarantined.append((finding.fingerprint, result.pii_hits))
+            on_quarantine(finding.fingerprint, result.pii_hits)
     return SeedOutcome(
         findings=len(findings), already_reported=len(findings) - len(new_findings),
         written=written, quarantined=quarantined,
@@ -208,8 +225,6 @@ def plan_run(
 
 @dataclass(frozen=True)
 class InvestigationOutcome:
-    index: int
-    total: int
     finding: Finding
     write: WriteResult
     usd: float
@@ -240,7 +255,9 @@ def investigate_findings(
     effort: str,
     runner: ModelRunner,
     store: ReportStore = DEFAULT_STORE,
+    on_plan: Callable[[RunPlan], None] = lambda *_: None,
     on_start: Callable[[int, int, Finding], None] = lambda *_: None,
+    on_result: Callable[[InvestigationOutcome], None] = lambda *_: None,
 ) -> InvestigationRun:
     """Runs the real agent (`claude -p`) on capped new findings and writes
     real reports. Costs money/quota per ADR-0001 -- default cap is
@@ -251,10 +268,16 @@ def investigate_findings(
     report still state: seeded/incomplete) -- not just brand-new signal.
     A seeded report is overwritten with the real investigation (ADR-0010).
 
-    `on_start` fires once per finding before the agent call, for a caller
-    that wants to print progress -- the agent call is the slow, paid step,
-    and a caller with no callback still gets every outcome back at the end."""
+    Three callbacks let a caller narrate the run without this module
+    knowing about stdout, and their order is the point: `on_plan` fires
+    after planning and before the first paid call -- the tier and budget
+    announcement ADR-0023 exists for has to reach the operator while a
+    Ctrl-C still saves money -- then `on_start` before each agent call and
+    `on_result` after each report is written, so every cost line stays
+    attached to the finding that produced it. A caller with no callbacks
+    still gets every outcome back at the end."""
     plan = plan_run(collect_fn, window_hours=window_hours, max_findings=max_findings, store=store)
+    on_plan(plan)
     outcomes: list[InvestigationOutcome] = []
     for i, finding in enumerate(plan.kept, 1):
         on_start(i, len(plan.kept), finding)
@@ -277,10 +300,12 @@ def investigate_findings(
         report.cost.usd = result.usd
         report.cost.model = result.model
         write_result = write_report(report, store)
-        outcomes.append(InvestigationOutcome(
-            index=i, total=len(plan.kept), finding=finding, write=write_result,
+        outcome = InvestigationOutcome(
+            finding=finding, write=write_result,
             usd=result.usd, state=result.state, warnings=result.warnings,
-        ))
+        )
+        outcomes.append(outcome)
+        on_result(outcome)
     return InvestigationRun(plan=plan, outcomes=outcomes)
 
 
@@ -293,6 +318,7 @@ class PromoteCommand:
     path: Path
     title: str
     issue_body: str
+    report: dict
 
 
 def build_promote_command(
@@ -303,32 +329,35 @@ def build_promote_command(
     path = store.path(fingerprint)
     if not path.exists():
         raise PipelineError(f"no report at {path}")
-    report = read_report(path)
-    _, _, body = path.read_text().split("---", 2)
+    _, front_matter_raw, body = path.read_text().split("---", 2)
+    report = yaml.safe_load(front_matter_raw)
     return PromoteCommand(
         path=path, title=issue_title(report), issue_body=extract_issue_body(body),
+        report=report,
     )
 
 
 def promote_report(
-    fingerprint: str,
+    command: PromoteCommand,
     *,
     account: str | None,
     required_account: str,
     create_issue_fn: Callable[[str, str], str | None],
-    store: ReportStore = DEFAULT_STORE,
 ) -> str:
     """Files the issue and records `issue:` + `state: promoted`. Raises
-    PipelineError on any blocker (ADR-0028) or if `gh` fails -- promoting
-    stays a human gesture, and every refusal fails closed rather than
-    filing something a human would have to notice and undo."""
-    command = build_promote_command(fingerprint, store=store)
-    report = read_report(command.path)
+    PromotionBlocked when a guard refuses before anything is filed
+    (ADR-0028), PipelineError when `gh` itself fails after the attempt --
+    promoting stays a human gesture, and every refusal fails closed rather
+    than filing something a human would have to notice and undo.
+
+    Takes the command the caller already built rather than a fingerprint:
+    the guards then judge the same bytes that get filed, and a non-default
+    store is named once instead of at two call sites that could disagree."""
     blockers = promotion_blockers(
-        report, command.issue_body, account, required_account=required_account,
+        command.report, command.issue_body, account, required_account=required_account,
     )
     if blockers:
-        raise PipelineError("; ".join(blockers))
+        raise PromotionBlocked(blockers)
 
     url = create_issue_fn(command.title, command.issue_body)
     if url is None:
@@ -361,13 +390,20 @@ def fix_report(
     model: str,
     effort: str,
     notify_fn: Callable[[str, str], None] = lambda *_: None,
+    on_start: Callable[[dict, str], None] = lambda *_: None,
     store: ReportStore = DEFAULT_STORE,
 ) -> FixOutcome:
     """Creates a PR that fixes a promoted finding. Costs money -- runs a
     claude -p subprocess with code tools against the target service's
     repo. Raises PipelineError for every precondition a human already
     checked once at promote time but that may have changed since (state,
-    issue URL, a repo mapping)."""
+    issue URL, a repo mapping).
+
+    `on_start` fires with the resolved repo and issue URL before the agent
+    call, and that is the only moment the mapping is still cancellable:
+    resolve_repo falls back to scanning the report body, so a report
+    naming a second service can resolve to the wrong repo, and this agent
+    writes code, pushes a branch and opens a PR."""
     path = store.path(fingerprint)
     if not path.exists():
         raise PipelineError(f"no report at {path}")
@@ -388,6 +424,8 @@ def fix_report(
     if repo_info is None:
         raise PipelineError(f"service '{service}' does not map to a fixable repo")
 
+    on_start(repo_info, issue_url)
+
     result = fix_fn(
         fingerprint=fingerprint, report_markdown=text, issue_url=issue_url,
         repo_info=repo_info, max_budget_usd=max_budget_usd, timeout_s=timeout_s,
@@ -395,8 +433,10 @@ def fix_report(
     )
 
     if result.pr_url:
-        notify_fn(issue_url, f"PR aberto pelo Houston fix agent: {result.pr_url}")
+        # Record before notifying: `gh` not being on PATH must not be what
+        # loses the URL of a PR the agent already pushed and billed for.
         update_front_matter(path, fix_pr=result.pr_url, fix_state=result.state)
+        notify_fn(issue_url, f"PR aberto pelo Houston fix agent: {result.pr_url}")
     elif result.error:
         update_front_matter(path, fix_pr=None, fix_state="incomplete")
 
