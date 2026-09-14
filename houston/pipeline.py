@@ -22,6 +22,7 @@ from houston.dedup import (
     filter_new,
     needs_investigation,
 )
+from houston.fix_agent import FixResult
 from houston.frontmatter import (
     QUARANTINED_STATE,
     Report,
@@ -52,6 +53,10 @@ class PromotionBlocked(PipelineError):
 
 
 CollectFn = Callable[..., list[Finding]]
+# Called with the service alone by investigate, and with the service plus the
+# report text by fix; houston.fix_agent.resolve_repo takes both via a
+# defaulted second parameter, so one annotation has to cover both shapes.
+ResolveRepoFn = Callable[..., dict | None]
 
 
 # ---------------------------------------------------------------------------
@@ -245,7 +250,7 @@ class InvestigationRun:
 def investigate_findings(
     collect_fn: CollectFn,
     investigate_fn: Callable[..., object],
-    resolve_repo_fn: Callable[[str | None], dict | None],
+    resolve_repo_fn: ResolveRepoFn,
     *,
     window_hours: int,
     max_findings: int,
@@ -375,7 +380,7 @@ def promote_report(
 class FixOutcome:
     repo_info: dict
     issue_url: str
-    result: object  # houston.fix_agent.FixResult
+    result: FixResult
 
 
 def fix_report(
@@ -383,7 +388,7 @@ def fix_report(
     *,
     issue: str | None,
     fix_fn: Callable[..., object],
-    resolve_repo_fn: Callable[[str | None, str], dict | None],
+    resolve_repo_fn: ResolveRepoFn,
     runner: ModelRunner,
     max_budget_usd: str,
     timeout_s: int,

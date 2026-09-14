@@ -127,16 +127,19 @@ used to leave the URL of a PR the agent had already pushed and billed for record
   matching `agent.investigate`'s/`fix_agent.fix`'s full keyword signature — Python's structural
   typing for a multi-keyword-argument callable doesn't have a clean `Callable[...]` spelling, and a
   `Protocol` with `__call__` would need to restate every keyword argument name. Accepted as a
-  precision gap: the two real call sites (`cli.py`) pass `agent_investigate`/`agent_fix` directly,
-  and `tests/test_pipeline.py` catches a shape mismatch at test-run time via any fake that expects
-  different keywords.
+  precision gap for the *argument* list only: the two real call sites (`cli.py`) pass
+  `agent_investigate`/`agent_fix` directly, and `tests/test_pipeline.py` catches a shape mismatch at
+  test-run time via any fake that expects different keywords. The return type is spelled —
+  `FixOutcome.result` is `FixResult`, imported from `houston.fix_agent`, which creates no cycle.
 - `resolve_repo` is injected as `resolve_repo_fn` even though it is a pure function reading a
   committed YAML file with its own six passing tests — a stricter reading of "only inject genuine
   swap points" would import it directly in `pipeline.py` instead. Kept as a parameter because
   `investigate_findings` calls it with one shape (`resolve_repo_fn(finding.service)`) and
   `fix_report` with another (`resolve_repo_fn(service, text)`) — `houston.service_repos.resolve_repo`
   already accepts both via a defaulted second argument, so in practice this is injecting the real
-  function everywhere it's used today, not a live seam.
+  function everywhere it's used today, not a live seam. Both signatures name one `ResolveRepoFn`
+  alias, since two different annotations for one injected target is a lie whichever one a caller
+  believes.
 
 ### Follow-up
 
