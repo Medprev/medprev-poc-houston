@@ -1,5 +1,11 @@
-"""E5 — report front-matter contract + the write path every report goes
-through. Nothing reaches reports/ without passing pii_gate.scan first."""
+"""E5 — report front-matter contract + the read and write paths every report
+goes through. Nothing reaches reports/ without passing pii_gate.scan first.
+
+`to_markdown` renders a `Report` and `from_markdown` parses one back, so the
+rendered shape — the `---` fences, the nested `window`/`observed`/`cost`
+blocks, the injected `**Link do Datadog:**` line — is known here and nowhere
+else. Callers that used to `split("---", 2)` for themselves now get the whole
+report, body included, as one typed value (ADR-0033)."""
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -14,6 +20,12 @@ from houston.report_store import DEFAULT_STORE, ReportStore
 # what stays in reports/ so dedup stops re-selecting the finding and the
 # spend stays visible to metrics (ADR-0015).
 QUARANTINED_STATE = "quarantined"
+
+# Rendered into the body by `to_markdown` and taken back out by
+# `from_markdown`. One literal, so the injection has an inverse: keeping a
+# previous one in a parsed body is what duplicated the line on every re-run
+# of the backfill script.
+LINK_LINE_PREFIX = "**Link do Datadog:**"
 
 
 @dataclass
@@ -109,8 +121,64 @@ class Report:
         # Injected here, not asked from the model: this is the authoritative
         # URL the collector already computed, not something the agent should
         # construct or guess at investigation time.
-        link_line = f"**Link do Datadog:** {self.datadog_url}\n\n" if self.datadog_url else ""
+        link_line = (
+            f"{LINK_LINE_PREFIX} {self.datadog_url}\n\n" if self.datadog_url else ""
+        )
         return f"---\n{yaml_block}---\n\n{link_line}{self.body}\n"
+
+    @classmethod
+    def from_markdown(cls, text: str) -> "Report":
+        """The inverse of `to_markdown`: one rendered report in, one typed
+        `Report` out, body included.
+
+        Total by design. The committed corpus has real drift -- 16 of 153
+        reports predate ADR-0019 and carry no `novelty`, and none carries the
+        `cost.model` ADR-0023 added -- so an absent key takes the field's
+        documented default rather than raising. `to_markdown` is therefore
+        not byte-identical on a parsed legacy report: it renders the keys that
+        report never had. Patching a report in place has to preserve the
+        document instead of re-rendering it.
+
+        `body` comes back stripped, without the injected link line -- the
+        inverse of the injection `to_markdown` performs, so a re-render does
+        not stack a second copy of it."""
+        front_matter, raw_body = split_document(text)
+        body = "\n".join(
+            line for line in raw_body.strip().splitlines()
+            if not line.startswith(LINK_LINE_PREFIX)
+        ).strip()
+        window = front_matter.get("window") or {}
+        observed = front_matter.get("observed") or {}
+        cost = front_matter.get("cost") or {}
+        return cls(
+            fingerprint=front_matter.get("fingerprint", ""),
+            source=front_matter.get("source", ""),
+            reason=front_matter.get("reason", ""),
+            novelty=front_matter.get("novelty", ""),
+            service=front_matter.get("service"),
+            environment=front_matter.get("environment", "production"),
+            window_from_ms=window.get("from") or 0,
+            window_to_ms=window.get("to") or 0,
+            observed_count=observed.get("count") or 0,
+            first_seen_ms=observed.get("first_seen"),
+            last_seen_ms=observed.get("last_seen"),
+            severity=front_matter.get("severity", ""),
+            state=front_matter.get("state", ""),
+            body=body,
+            cost=Cost(
+                input_tokens=cost.get("input_tokens") or 0,
+                output_tokens=cost.get("output_tokens") or 0,
+                duration_s=cost.get("duration_s") or 0.0,
+                usd=cost.get("usd") or 0.0,
+                cache_read_input_tokens=cost.get("cache_read_input_tokens") or 0,
+                cache_creation_input_tokens=cost.get("cache_creation_input_tokens") or 0,
+                model=cost.get("model"),
+            ),
+            issue=front_matter.get("issue"),
+            datadog_url=front_matter.get("datadog_url"),
+            fix_pr=front_matter.get("fix_pr"),
+            fix_state=front_matter.get("fix_state"),
+        )
 
 
 @dataclass
@@ -178,7 +246,19 @@ def _write_quarantine_record(
     return None
 
 
-def read_report(path: Path) -> dict:
-    text = path.read_text()
-    _, front_matter_raw, _ = text.split("---", 2)
-    return yaml.safe_load(front_matter_raw)
+def split_document(text: str) -> tuple[dict, str]:
+    """Splits a rendered report into its front-matter mapping and its raw
+    body, both exactly as written. The one implementation of the `---` rule.
+
+    `split("---", 2)` stops after two splits, so a `---` inside the body
+    stays in the body. Nothing is normalized: this is the document view,
+    for callers that must see the keys a file actually carries (or patch it
+    without re-rendering). Callers that want the report as a value want
+    `Report.from_markdown` instead."""
+    _, front_matter_raw, body = text.split("---", 2)
+    return yaml.safe_load(front_matter_raw) or {}, body
+
+
+def load_report(path: Path) -> Report:
+    """Reads one report file. The counterpart of `write_report`."""
+    return Report.from_markdown(path.read_text())

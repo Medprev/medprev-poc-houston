@@ -1,7 +1,7 @@
 """E5 proof: a synthetic report contaminated by each PII class never reaches
 reports/ as text — the body lands in reports/.quarantine/ and only a
 redacted record stays behind."""
-from houston.frontmatter import Cost, Report, read_report, write_report
+from houston.frontmatter import Cost, Report, load_report, write_report
 from houston.models import Finding
 
 
@@ -23,8 +23,8 @@ def test_datadog_url_is_injected_in_front_matter_and_visibly_in_body(store):
     assert "datadog_url: https://app.datadoghq.com/error-tracking/issue/et-test" in text
     assert "**Link do Datadog:** https://app.datadoghq.com/error-tracking/issue/et-test" in text
 
-    parsed = read_report(result.path)
-    assert parsed["datadog_url"] == "https://app.datadoghq.com/error-tracking/issue/et-test"
+    parsed = load_report(result.path)
+    assert parsed.datadog_url == "https://app.datadoghq.com/error-tracking/issue/et-test"
 
 
 def test_clean_report_reaches_reports_dir(store):
@@ -49,9 +49,9 @@ def test_reason_is_the_diagnostic_label_and_novelty_is_its_own_field(store):
     assert fresh.reason == "ProfessionalNotFoundException"
     assert fresh.novelty == "new"
 
-    parsed = read_report(write_report(fresh).path)
-    assert parsed["reason"] == "ProfessionalNotFoundException"
-    assert parsed["novelty"] == "new"
+    parsed = load_report(write_report(fresh).path)
+    assert parsed.reason == "ProfessionalNotFoundException"
+    assert parsed.novelty == "new"
 
 
 def test_cache_tokens_are_recorded_in_front_matter(store):
@@ -60,12 +60,12 @@ def test_cache_tokens_are_recorded_in_front_matter(store):
         input_tokens=23881, output_tokens=340, duration_s=8.2, usd=0.32,
         cache_read_input_tokens=10596, cache_creation_input_tokens=13285,
     )
-    parsed = read_report(write_report(report).path)
+    parsed = load_report(write_report(report).path)
 
-    assert parsed["cost"]["input_tokens"] == 23881
-    assert parsed["cost"]["cache_read_input_tokens"] == 10596
-    assert parsed["cost"]["cache_creation_input_tokens"] == 13285
-    assert parsed["cost"]["usd"] == 0.32
+    assert parsed.cost.input_tokens == 23881
+    assert parsed.cost.cache_read_input_tokens == 10596
+    assert parsed.cost.cache_creation_input_tokens == 13285
+    assert parsed.cost.usd == 0.32
 
 
 def test_contaminated_report_body_never_reaches_reports(store):
@@ -102,20 +102,68 @@ def test_pii_hit_leaves_a_redacted_record_so_the_finding_is_not_re_investigated(
     assert result.written is False
     assert result.record_path == store / "et-dirty.md"
 
-    recorded = read_report(result.record_path)
-    assert recorded["state"] == "quarantined"
-    assert recorded["cost"]["usd"] == 0.32  # the spend stays visible to metrics
+    recorded = load_report(result.record_path)
+    assert recorded.state == "quarantined"
+    assert recorded.cost.usd == 0.32  # the spend stays visible to metrics
     assert "carla.cury@medprevonline.com" not in result.record_path.read_text()
     assert needs_investigation("et-dirty") is False
 
 
-def test_written_report_round_trips_through_read_report(store):
+def test_written_report_round_trips_through_load_report(store):
     report = Report.from_finding(_finding(), body="Root cause: timeout.")
     report.cost = Cost(input_tokens=1200, output_tokens=340, duration_s=8.2, usd=0.011)
     result = write_report(report)
 
-    parsed = read_report(result.path)
-    assert parsed["fingerprint"] == "et-test"
-    assert parsed["state"] == "new"
-    assert parsed["cost"]["input_tokens"] == 1200
-    assert parsed["observed"]["count"] == 42
+    parsed = load_report(result.path)
+    assert parsed.fingerprint == "et-test"
+    assert parsed.state == "new"
+    assert parsed.cost.input_tokens == 1200
+    assert parsed.observed_count == 42
+
+
+def test_from_markdown_recovers_every_field_to_markdown_rendered():
+    """The whole point of the read path: no field is lost on the way back.
+    Field-by-field equality, not a spot check -- a field added to `Report`
+    and rendered but not parsed fails here, which is the drift that made the
+    backfill script rebuild a report by hand and drop `fix_pr`/`fix_state`."""
+    report = Report.from_finding(_finding(), state="promoted", body="Root cause: timeout.")
+    report.cost = Cost(
+        input_tokens=1200, output_tokens=340, duration_s=8.2, usd=0.011,
+        cache_read_input_tokens=90, cache_creation_input_tokens=7, model="sonnet",
+    )
+    report.issue = "https://github.com/Medprev/medprev-product-backlog/issues/1"
+    report.fix_pr = "https://github.com/Medprev/medprev-web-app/pull/1372"
+    report.fix_state = "pr_open"
+
+    assert Report.from_markdown(report.to_markdown()) == report
+
+
+def test_re_rendering_a_parsed_report_does_not_stack_the_link_line():
+    """`to_markdown` injects `**Link do Datadog:**` into the body. Without an
+    inverse in the read path, load-then-write duplicated it on every cycle."""
+    once = Report.from_finding(_finding(), body="Causa raiz: timeout.").to_markdown()
+    twice = Report.from_markdown(once).to_markdown()
+
+    assert twice.count("**Link do Datadog:**") == 1
+    assert twice == once
+
+
+def test_a_legacy_report_parses_but_does_not_re_render_byte_identically():
+    """Pins the asymmetry the corpus actually has: 16 of 153 reports predate
+    ADR-0019's `novelty` and none carries ADR-0023's `cost.model`, so
+    re-rendering a parsed legacy report *adds* keys it never had. Patching a
+    report in place therefore has to preserve the document rather than
+    re-render it."""
+    legacy = (
+        "---\nfingerprint: et-legacy\nsource: error_tracking\nreason: new\n"
+        "service: medprev-rest-api\nenvironment: production\n"
+        "window:\n  from: 1\n  to: 2\nobserved:\n  count: 12\n"
+        "  first_seen: 3\n  last_seen: 4\nseverity: medium\nstate: seeded\n"
+        "cost:\n  input_tokens: 0\n  usd: 0.0\nissue: null\n---\n\nSeeded.\n"
+    )
+    report = Report.from_markdown(legacy)
+
+    assert report.novelty == ""  # absent on disk, not invented
+    assert report.cost.model is None
+    assert "novelty:" not in legacy
+    assert "novelty: ''" in report.to_markdown()

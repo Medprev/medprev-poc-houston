@@ -2,7 +2,7 @@
 handled; that is the entire dedup mechanism, no separate index needed."""
 from collections import defaultdict
 
-from houston.frontmatter import read_report
+from houston.frontmatter import load_report
 from houston.models import Finding
 from houston.report_store import DEFAULT_STORE, ReportStore
 
@@ -33,7 +33,7 @@ def needs_investigation(fingerprint: str, store: ReportStore = DEFAULT_STORE) ->
     path = store.path(fingerprint)
     if not path.exists():
         return True
-    return read_report(path).get("state") in NEEDS_INVESTIGATION_STATES
+    return load_report(path).state in NEEDS_INVESTIGATION_STATES
 
 
 def filter_needing_investigation(

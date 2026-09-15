@@ -1,14 +1,18 @@
 """E6 proof: every number comes from front-matter, none typed by hand."""
+from houston.frontmatter import Cost, Report
 from houston.metrics import can_close_phase, compute
 
 
-def _report(state, input_tokens=0, duration_s=0.0, issue=None, usd=0.0):
-    return {
-        "state": state,
-        "cost": {"input_tokens": input_tokens, "output_tokens": 0,
-                  "duration_s": duration_s, "usd": usd},
-        "issue": issue,
-    }
+def _report(state, input_tokens=0, duration_s=0.0, issue=None, usd=0.0) -> Report:
+    return Report(
+        fingerprint="et-metrics", source="error_tracking", reason="SomeError",
+        novelty="new", service="medprev-rest-api", environment="production",
+        window_from_ms=0, window_to_ms=0, observed_count=0,
+        first_seen_ms=None, last_seen_ms=None, severity="medium",
+        state=state, body="",
+        cost=Cost(input_tokens=input_tokens, duration_s=duration_s, usd=usd),
+        issue=issue,
+    )
 
 
 def test_fp_rate_is_none_when_nothing_decided_yet():
@@ -79,7 +83,13 @@ def test_spend_is_aggregated_from_front_matter():
 
 
 def test_percentiles_tolerate_reports_written_before_a_cost_field_existed():
-    m = compute([{"state": "seeded"}, _report("new", input_tokens=100, usd=0.1)])
+    """The tolerance is asserted at the real boundary -- a document on disk
+    with no `cost:` block at all -- not against a hand-built dict. `Cost`'s
+    own defaults are what make it hold, so metrics does not re-implement
+    them."""
+    legacy = Report.from_markdown("---\nstate: seeded\n---\n\nSeeded.\n")
+    m = compute([legacy, _report("new", input_tokens=100, usd=0.1)])
+
     assert m.total == 2
     assert m.input_tokens_p50 == 100
     assert m.usd_total == 0.1
