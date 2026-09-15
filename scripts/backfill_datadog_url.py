@@ -30,17 +30,12 @@ from houston.report_store import DEFAULT_STORE
 _LEGACY_NOVELTY = {"new", "regression"}
 
 
-def _recorded_window(report: Report) -> Window | None:
-    if report.window_from_ms and report.window_to_ms:
-        return Window(from_ms=report.window_from_ms, to_ms=report.window_to_ms)
-    return None
-
-
-def _deep_link(finding: Finding, window: Window | None, site: str) -> str | None:
+def _deep_link(finding: Finding, report: Report, site: str) -> str | None:
     """The Kubernetes link is window-scoped, so it is rebuilt against the
     window the report's own numbers were measured in — not the window this
     migration happens to run in."""
-    if finding.source == "kubernetes" and window is not None:
+    if finding.source == "kubernetes" and report.window_from_ms and report.window_to_ms:
+        window = Window(from_ms=report.window_from_ms, to_ms=report.window_to_ms)
         return event_explorer_url(site, finding.query, window)
     return finding.datadog_url
 
@@ -61,6 +56,34 @@ def _repaired_labels(existing: Report, finding: Finding) -> tuple[str, str]:
     return reason, novelty
 
 
+def refreshed(existing: Report, finding: Finding, site: str) -> Report:
+    """One report, three derived fields refreshed.
+
+    Everything measured -- state, body, cost, issue, observed counts,
+    severity, the window, and the fix_pr/fix_state a `houston fix` run
+    recorded -- is carried by `replace` rather than re-listed, which is what
+    stops a field added to `Report` later from being silently dropped here
+    (#35).
+
+    The old code indexed the front-matter dict directly, so a malformed
+    report raised KeyError and stopped the migration. `from_markdown` is
+    tolerant, so that loudness has to be asked for: this rewrites 153 files
+    in one pass, and writing an empty state back over all of them is not a
+    failure mode worth discovering afterwards."""
+    if not existing.state or not existing.fingerprint:
+        raise ValueError(
+            "refusing to rewrite a report with no state/fingerprint: "
+            f"{existing.fingerprint or '<unnamed>'}"
+        )
+    reason, novelty = _repaired_labels(existing, finding)
+    return replace(
+        existing,
+        reason=reason,
+        novelty=novelty,
+        datadog_url=_deep_link(finding, existing, site),
+    )
+
+
 def main() -> None:
     findings_by_fp = {f.fingerprint: f for f in collect(window_hours=96)}
     site = Config.from_env().dd_site
@@ -72,22 +95,7 @@ def main() -> None:
             skipped_no_finding += 1
             continue  # finding aged out of the current 96h window -- can't refresh its link
 
-        existing = load_report(path)
-        window = _recorded_window(existing)
-        reason, novelty = _repaired_labels(existing, finding)
-
-        # Only the three derived fields move. Everything measured -- state,
-        # body, cost, issue, observed counts, severity, the window, and the
-        # fix_pr/fix_state a `houston fix` run recorded -- is carried by
-        # `replace` rather than re-listed, which is what stops a field added
-        # later from being silently dropped here (#35).
-        report = replace(
-            existing,
-            reason=reason,
-            novelty=novelty,
-            datadog_url=_deep_link(finding, window, site),
-        )
-        result = write_report(report)
+        result = write_report(refreshed(load_report(path), finding, site))
         assert result.written, f"unexpected quarantine on backfill: {path.stem}"
         updated += 1
 

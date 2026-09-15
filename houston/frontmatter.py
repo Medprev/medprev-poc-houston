@@ -4,8 +4,10 @@ goes through. Nothing reaches reports/ without passing pii_gate.scan first.
 `to_markdown` renders a `Report` and `from_markdown` parses one back, so the
 rendered shape — the `---` fences, the nested `window`/`observed`/`cost`
 blocks, the injected `**Link do Datadog:**` line — is known here and nowhere
-else. Callers that used to `split("---", 2)` for themselves now get the whole
-report, body included, as one typed value (ADR-0033)."""
+else: `split_document` is the only implementation of the `---` rule in the
+package, and `pipeline.update_front_matter` patches documents on top of it.
+Callers that used to split for themselves now get the whole report, body
+included, as one typed value (ADR-0033)."""
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 

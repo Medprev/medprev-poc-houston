@@ -599,3 +599,21 @@ def test_the_pr_url_is_recorded_before_gh_is_told_about_it(store):
     parsed = load_report(store / "et-fix-notify-fails.md")
     assert parsed.fix_pr == "https://github.com/org/repo/pull/7"
     assert parsed.fix_state == "pr_open"
+
+
+def test_the_filed_issue_body_keeps_the_datadog_link(store):
+    """143 of the 153 committed reports carry no `## Corpo da issue` heading,
+    so `extract_issue_body` falls back to the whole body -- which is exactly
+    where the injected `**Link do Datadog:**` line lives. Building the command
+    from `report.body` (link-stripped) silently dropped the reader's only way
+    to the evidence from every issue filed off those reports (ADR-0011)."""
+    finding = _finding(
+        "et-no-heading",
+        datadog_url="https://app.datadoghq.com/error-tracking/issue/no-heading",
+    )
+    write_report(Report.from_finding(finding, body="Seeded, not investigated."))
+
+    command = build_promote_command("et-no-heading")
+
+    assert command.issue_body.startswith("**Link do Datadog:**")
+    assert "Seeded, not investigated." in command.issue_body

@@ -27,7 +27,7 @@ from houston.frontmatter import (
     QUARANTINED_STATE,
     Report,
     WriteResult,
-    load_report,
+    split_document,
     write_report,
 )
 from houston.model_runner import ModelRunner
@@ -148,10 +148,13 @@ def update_front_matter(path: Path, **fields) -> None:
     chose -- never model text, so this does not re-run the PII gate over
     a body that already passed it at write time (ADR-0030's "Bad" section
     records this as a deliberate, still-open exception to
-    `write_report()` being the only gated path)."""
-    text = path.read_text()
-    _, front_raw, body = text.split("---", 2)
-    fm = yaml.safe_load(front_raw)
+    `write_report()` being the only gated path).
+
+    Patches the document rather than re-rendering the `Report`: every one of
+    the 153 committed reports gains keys on a re-render (none carries
+    ADR-0023's `cost.model`, 16 predate ADR-0019's `novelty`), so a rewrite
+    here would edit reports it was only meant to annotate."""
+    fm, body = split_document(path.read_text())
     fm.update(fields)
     yaml_block = yaml.safe_dump(fm, sort_keys=False, allow_unicode=True)
     path.write_text(f"---\n{yaml_block}---{body}")
@@ -334,10 +337,18 @@ def build_promote_command(
     path = store.path(fingerprint)
     if not path.exists():
         raise PipelineError(f"no report at {path}")
-    report = load_report(path)
+    text = path.read_text()
+    report = Report.from_markdown(text)
+    # The issue body is filed verbatim into a shared backlog, so it comes
+    # from the *document* view, not from `report.body`. 143 of the 153
+    # committed reports carry no `## Corpo da issue` heading and hit
+    # `extract_issue_body`'s whole-body fallback -- exactly where the
+    # injected `**Link do Datadog:**` line lives, and that link is the
+    # reader's way to the real evidence (ADR-0011).
+    _, document_body = split_document(text)
     return PromoteCommand(
         path=path, title=issue_title(report),
-        issue_body=extract_issue_body(report.body), report=report,
+        issue_body=extract_issue_body(document_body), report=report,
     )
 
 

@@ -1,6 +1,8 @@
 """E5 proof: a synthetic report contaminated by each PII class never reaches
 reports/ as text — the body lands in reports/.quarantine/ and only a
 redacted record stays behind."""
+import dataclasses
+
 from houston.frontmatter import Cost, Report, load_report, write_report
 from houston.models import Finding
 
@@ -135,6 +137,15 @@ def test_from_markdown_recovers_every_field_to_markdown_rendered():
     report.fix_pr = "https://github.com/Medprev/medprev-web-app/pull/1372"
     report.fix_state = "pr_open"
 
+    # Without this, the test passes vacuously for exactly the drift it exists
+    # to catch: a field rendered but not parsed falls to its default on both
+    # sides, and dataclass __eq__ returns True.
+    for f in dataclasses.fields(report):
+        if f.default is not dataclasses.MISSING:
+            assert getattr(report, f.name) != f.default, f"{f.name} is not exercised"
+    for f in dataclasses.fields(report.cost):
+        assert getattr(report.cost, f.name) != f.default, f"cost.{f.name} not exercised"
+
     assert Report.from_markdown(report.to_markdown()) == report
 
 
@@ -148,12 +159,12 @@ def test_re_rendering_a_parsed_report_does_not_stack_the_link_line():
     assert twice == once
 
 
-def test_a_legacy_report_parses_but_does_not_re_render_byte_identically():
-    """Pins the asymmetry the corpus actually has: 16 of 153 reports predate
-    ADR-0019's `novelty` and none carries ADR-0023's `cost.model`, so
-    re-rendering a parsed legacy report *adds* keys it never had. Patching a
-    report in place therefore has to preserve the document rather than
-    re-render it."""
+def test_a_report_on_disk_does_not_re_render_byte_identically():
+    """Pins the asymmetry the corpus actually has. Measured: **153 of 153**
+    committed reports gain keys on a re-render, not just the 16 legacy ones --
+    no report carries ADR-0023's `cost.model`, which is enough on its own.
+    Patching a report in place therefore has to preserve the document rather
+    than re-render it, which is what `update_front_matter` does."""
     legacy = (
         "---\nfingerprint: et-legacy\nsource: error_tracking\nreason: new\n"
         "service: medprev-rest-api\nenvironment: production\n"

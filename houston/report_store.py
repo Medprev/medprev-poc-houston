@@ -5,7 +5,7 @@ copy into `frontmatter.py` and `metrics.py`; `QUARANTINE_DIR` was derived
 from it once, at import time, in `frontmatter.py`. Isolating a test meant
 monkeypatching four separate names, and `frontmatter.py` importing from
 `dedup.py` while `dedup.needs_investigation` needed a function-local import
-of `frontmatter.read_report` to avoid a real import cycle (ADR-0029,
+of `frontmatter`'s reader to avoid a real import cycle (ADR-0029,
 ADR-0030).
 
 `ReportStore` is the intended single place a report *body* reaches

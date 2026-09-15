@@ -64,10 +64,24 @@ def test_every_committed_report_parses_into_a_report():
         assert report.state, path
 
 
-def test_parsed_bodies_carry_no_second_injected_link_line():
+def test_no_parsed_body_keeps_the_injected_link_line():
     """`to_markdown` injects `**Link do Datadog:**`; `from_markdown` takes it
-    back out. Without the inverse, every load-then-write cycle stacked
-    another copy -- which is what the backfill script had to strip by hand."""
+    back out, so it never reaches a caller twice. (The "does not stack on
+    re-render" claim is asserted directly in tests/test_frontmatter.py.)"""
     for path in _report_paths():
         report = Report.from_markdown(path.read_text())
         assert "**Link do Datadog:**" not in report.body, path
+
+
+def test_the_real_corpus_computes_metrics_without_raising():
+    """The parser is total, so a wrong *type* on disk survives parsing and
+    only surfaces three layers later, inside an aggregation. Form alone is
+    not the invariant that matters -- `houston metrics` running is."""
+    from houston.metrics import can_close_phase, compute
+
+    reports = [Report.from_markdown(p.read_text()) for p in _report_paths()]
+    metrics = compute(reports)
+
+    assert metrics.total == len(reports)
+    assert metrics.usd_total > 0  # a corpus that spent nothing means nothing parsed
+    assert can_close_phase(reports)[1] >= 0
