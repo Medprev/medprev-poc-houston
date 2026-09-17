@@ -25,6 +25,7 @@ from houston.config import Config
 from houston.datadog_client import Window, event_explorer_url
 from houston.frontmatter import Report, load_report, write_report
 from houston.models import Finding
+from houston.report_state import check_fix_state, check_state
 from houston.report_store import DEFAULT_STORE
 
 _LEGACY_NOVELTY = {"new", "regression"}
@@ -84,7 +85,30 @@ def refreshed(existing: Report, finding: Finding, site: str) -> Report:
     )
 
 
+def preflight(paths: list[Path]) -> None:
+    """Every report is checked before the first one is written.
+
+    `write_report` refuses a state outside the vocabulary (ADR-0035), and
+    this loop rewrites 153 files with no transaction around it -- so without
+    a pass up front, one bad document leaves the corpus half-migrated and
+    the traceback names the exception, not the file."""
+    offenders = []
+    for path in paths:
+        report = load_report(path)
+        try:
+            check_state(report.state)
+            if report.fix_state is not None:
+                check_fix_state(report.fix_state)
+        except ValueError as exc:
+            offenders.append(f"{path.name}: {exc}")
+    if offenders:
+        raise SystemExit(
+            "refusing to migrate -- fix these first:\n  " + "\n  ".join(offenders)
+        )
+
+
 def main() -> None:
+    preflight(list(DEFAULT_STORE.iter_paths()))
     findings_by_fp = {f.fingerprint: f for f in collect(window_hours=96)}
     site = Config.from_env().dd_site
     updated, skipped_no_finding = 0, 0

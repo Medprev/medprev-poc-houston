@@ -36,7 +36,7 @@ from houston.frontmatter import (
 )
 from houston.model_runner import ModelRunner
 from houston.models import Finding
-from houston.report_state import FixState, ReportState
+from houston.report_state import ReportState
 from houston.report_store import DEFAULT_STORE, ReportStore
 
 # What the document writers raise when a report on disk is not the shape
@@ -315,7 +315,7 @@ def investigate_findings(
             finding, max_budget_usd=max_budget_usd, timeout_s=timeout_s,
             target_repo=target_repo, model=model, effort=effort, runner=runner,
         )
-        if result.state == FixState.INCOMPLETE:
+        if result.state == ReportState.INCOMPLETE:
             report = Report.from_finding(finding, state=ReportState.INCOMPLETE, body=(
                 f"Investigação não foi concluída: {result.error}"
             ))

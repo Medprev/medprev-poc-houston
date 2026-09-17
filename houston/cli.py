@@ -32,7 +32,7 @@ from houston.pipeline import (
     promote_report,
     seed,
 )
-from houston.report_state import BLOCKING
+from houston.report_state import BLOCKING, blocks_phase
 
 ISSUE_REPO = "Medprev/medprev-product-backlog"
 ISSUE_LABEL = "AIOPS"
@@ -86,9 +86,13 @@ def cmd_metrics(args: argparse.Namespace) -> int:
 
     can_close, pending = can_close_phase(reports)
     if not can_close:
+        # Built from the states actually on disk, not from BLOCKING: a state
+        # this package cannot read blocks the phase (ADR-0035) and would
+        # otherwise print an empty breakdown next to a non-zero count.
         breakdown = ", ".join(
-            f"{m.by_state[state]} {state}"
-            for state in BLOCKING if m.by_state.get(state)
+            f"{count} {state or '<no state>'}"
+            for state, count in sorted(m.by_state.items())
+            if blocks_phase(state)
         )
         print(f"\nphase CANNOT close: {pending} report(s) still owe work ({breakdown})")
         return 1

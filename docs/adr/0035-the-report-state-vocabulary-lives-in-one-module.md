@@ -16,11 +16,11 @@ read now keeps the phase open instead of disappearing from it.
 the phase from closing, and — through `promoted`/`discarded` — the false-positive rate this PoC
 exists to produce. Measured on `origin/main` (`0475f8c`), it had no owner.
 
-1. **Four partial vocabularies, in four modules.** `dedup.NEEDS_INVESTIGATION_STATES`
+1. **Six partial vocabularies.** Four executable — `dedup.NEEDS_INVESTIGATION_STATES`
    (`{seeded, incomplete}`), `metrics.BLOCKING_STATES` (`(new, incomplete, quarantined)`),
-   `scripts/generate_site.py:_STATE_ORDER` (six values, the only exhaustive list in code), and
-   `frontmatter.QUARANTINED_STATE` (one). The other exhaustive list was a **comment** on
-   `Report.state`; a fourth lived in a set literal inside `tests/test_report_corpus.py`.
+   `scripts/generate_site.py:_STATE_ORDER` (six values, the only exhaustive one that runs), and
+   `frontmatter.QUARANTINED_STATE` (one) — plus two written as **comments** on `Report.state` and
+   `Report.fix_state`, and a set literal inside `tests/test_report_corpus.py`.
 
 2. **Nothing validated a state on the way to disk.** `write_report` took any string. `state: promted`
    would have been rendered, written, parsed back as itself, and counted as its own row in
@@ -62,6 +62,26 @@ compares and decides with; `to_markdown` coerces with `str()`, so passing a memb
 than a crash at write time — a real trap, because a `StrEnum` satisfies every `str` annotation on the
 way there.
 
+**The comment vocabularies become pointers.** `Report.state` and `Report.fix_state` carried two of
+the six lists as comments — the two ADR-0035 calls non-authoritative — so they now name the module
+that owns the vocabulary instead of restating it. `tests/test_report_corpus.py` keeps its own literal
+set on purpose: it is the independent witness that the committed corpus is in the vocabulary, and
+deriving it from the enum would let the enum validate itself.
+
+**One YAML writer, one coercion.** The package had two `yaml.safe_dump` call sites — `to_markdown`
+and `_write_document` — and this ADR's first version coerced the fields of the first one only. Since
+`fix_agent` now returns `FixState` members, `record_fix_attempt` fed a member straight into the
+second, which raised `RepresenterError`; `pipeline.WRITE_BACK_ERRORS` (ADR-0034) catches
+`yaml.YAMLError`, so it became a warning and **every `houston fix` silently stopped recording its PR,
+state, cost and count**. Both paths now render through `_dump_front_matter`, which coerces the whole
+mapping. Found in review, before merge, by the question "does the coercion cover every write path" —
+the answer was no, and the tests passed because every one of them passed a literal.
+
+**Writing vocabulary is narrower than reading vocabulary.** `WRITABLE_FIX` is `{pr_open, incomplete}`:
+`check_fix_state` refuses `merged`/`rejected` from code. They stay in `FixState` because a human
+editing the file means something by them, but a `# human-owned, no writer` comment is a promise and
+the frozenset is the enforcement.
+
 **`attempted` is deleted rather than kept.** `merged` and `rejected` stay in `FixState`, marked in
 code as human-owned with no writer: that is the real workflow `docs/pipeline.md` draws, and naming
 them is how the gap stays visible instead of looking like an oversight.
@@ -72,7 +92,7 @@ them is how the gap stays visible instead of looking like an oversight.
 
 - The vocabulary is in one place, and `DISPLAY_ORDER` is covered by a test that compares it against
   the enum — a state added later cannot silently disappear from the incident page.
-- 292 tests pass (281 before, +11). `reports/` is untouched, `tests/test_report_golden.py` and
+- 295 tests pass (281 before, +14). `reports/` is untouched, `tests/test_report_golden.py` and
   `tests/test_report_corpus.py` are unedited, and `mise run metrics` over the real 153-report corpus
   prints output byte-identical to the pre-change checkout, `diff`-verified. `ruff` clean.
 - The two central tests are verified by mutation, not by passing: making an unreadable state
@@ -93,8 +113,12 @@ them is how the gap stays visible instead of looking like an oversight.
 - **`merged`/`rejected` remain unreachable.** Naming them as human-owned does not record a reviewer's
   verdict; nothing closes the loop after `pr_open`, so `houston metrics` cannot say whether a fix was
   accepted.
-- An unreadable state now blocks the phase forever until a human edits the file. That is the intent,
-  but it is a way to wedge `can_close_phase` that did not exist before.
+- An unreadable state now blocks the phase until a human intervenes, and the exits are worth naming
+  because the ADR first said only "edits the file": editing it by hand, `houston promote --create`
+  (which writes `state: promoted` — `promotion_blockers` does not check legibility), or deleting the
+  report. It shows up in `houston metrics`'s by-state table and the site's table, and the blocking
+  breakdown now names it too; the site's counter strip still skips it, because it iterates
+  `DISPLAY_ORDER`.
 
 ### Follow-up
 

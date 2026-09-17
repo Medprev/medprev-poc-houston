@@ -106,12 +106,28 @@ def test_a_fix_state_outside_the_vocabulary_never_reaches_disk(store):
 
 
 def test_every_state_a_writer_produces_is_in_the_vocabulary():
-    """The enum and the writers cannot drift apart silently: these are the
-    literals `pipeline.py` and `fix_agent.py` actually pass."""
-    for state in ("seeded", "new", "incomplete", "quarantined", "promoted"):
-        check_state(state)  # raises if the writers and the enum drifted apart
-    for fix_state in ("pr_open", "incomplete"):
+    """The values `pipeline.py` and `fix_agent.py` hand to the writers --
+    as members now, which is what this asserts: the enum and the writers
+    cannot drift apart silently."""
+    for state in (ReportState.SEEDED, ReportState.NEW, ReportState.INCOMPLETE,
+                  ReportState.QUARANTINED, ReportState.PROMOTED):
+        check_state(state)
+    for fix_state in (FixState.PR_OPEN, FixState.INCOMPLETE):
         check_fix_state(fix_state)
+
+
+def test_a_reviewers_verdict_is_readable_vocabulary_that_code_cannot_write(store):
+    """`merged`/`rejected` name what a human means when they edit the file.
+    Nothing observes them, so no call site may record one: the `# human-owned`
+    comment promised that and only this refusal delivers it."""
+    path = write_report(_report(ReportState.PROMOTED)).path
+
+    with pytest.raises(ValueError, match="reviewer's verdict"):
+        record_fix_attempt(
+            path, pr_url=None, state=FixState.MERGED, cost=Cost(usd=0.1),
+        )
+
+    assert load_report(path).fix_state is None
 
 
 # ---------------------------------------------------------------------------
@@ -146,3 +162,24 @@ def test_the_fix_vocabulary_says_which_values_have_a_writer():
     """`merged` and `rejected` are the reviewer's verdict and no code writes
     them; `attempted` was listed on the field and existed nowhere else."""
     assert {s.value for s in FixState} == {"pr_open", "incomplete", "merged", "rejected"}
+
+
+def test_a_fix_state_passed_as_an_enum_member_reaches_disk(store):
+    """The symmetric case to the one above it, and the one that was missing:
+    `fix_agent` hands `FixState.PR_OPEN` through `pipeline` into
+    `record_fix_attempt`, which writes through this module's *other*
+    `safe_dump`. Coercing only the fields `to_markdown` renders left that
+    path raising RepresenterError -- swallowed by `WRITE_BACK_ERRORS` into a
+    warning, so every `houston fix` lost its PR, state, cost and count."""
+    path = write_report(_report(ReportState.PROMOTED)).path
+
+    record_fix_attempt(
+        path, pr_url="https://github.com/org/repo/pull/7",
+        state=FixState.PR_OPEN, cost=Cost(usd=0.9, model="claude-sonnet-5"),
+    )
+
+    parsed = load_report(path)
+    assert parsed.fix_state == "pr_open"
+    assert parsed.fix_pr == "https://github.com/org/repo/pull/7"
+    assert parsed.fix_cost.usd == 0.9
+    assert "fix_state: pr_open" in path.read_text()  # the value, not a tag

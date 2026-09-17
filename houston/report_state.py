@@ -48,6 +48,13 @@ class FixState(StrEnum):
     REJECTED = "rejected"  # human-owned, no writer
 
 
+# The fix states code is allowed to write. `MERGED`/`REJECTED` are the
+# reviewer's verdict on the PR: readable vocabulary, so a human who edits the
+# file by hand gets a name for what they mean -- and unwritable, so no call
+# site can record a verdict nobody gave. The `# human-owned` comment promised
+# this; only the frozenset enforces it.
+WRITABLE_FIX = frozenset({FixState.PR_OPEN, FixState.INCOMPLETE})
+
 # Work the phase still owes, in the order the incident page lists it.
 BLOCKING = (ReportState.NEW, ReportState.INCOMPLETE, ReportState.QUARANTINED)
 DISPLAY_ORDER = (
@@ -107,11 +114,18 @@ def check_state(raw: str) -> None:
 
 
 def check_fix_state(raw: str) -> None:
-    """Same, for the fix lifecycle."""
+    """Refuses a fix state a writer is about to put on disk -- including the
+    two only a human can mean."""
     try:
-        FixState(raw)
+        state = FixState(raw)
     except ValueError:
         known = ", ".join(s.value for s in FixState)
         raise ValueError(
             f"unknown fix state {raw!r} -- known states are: {known}"
         ) from None
+    if state not in WRITABLE_FIX:
+        writable = ", ".join(s.value for s in WRITABLE_FIX)
+        raise ValueError(
+            f"fix state {raw!r} is the reviewer's verdict on the PR, not something "
+            f"Houston observes -- code may write: {writable}"
+        )

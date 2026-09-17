@@ -11,6 +11,7 @@ Callers that used to split for themselves now get the whole report, body
 included, as one typed value (ADR-0033)."""
 import os
 from dataclasses import dataclass, field, replace
+from enum import Enum
 from pathlib import Path
 
 import yaml
@@ -47,6 +48,32 @@ class Cost:
     # report carried it. None only for reports written without an agent
     # run (seeded).
     model: str | None = None
+
+
+def _dump_front_matter(front_matter: dict) -> str:
+    """The one YAML writer in the package.
+
+    `yaml.safe_dump` refuses a `StrEnum` member with `RepresenterError`, and
+    a member satisfies every `str` annotation on the way here -- `fix_agent`
+    hands `FixState.PR_OPEN` through `pipeline` into `record_fix_attempt`
+    without a single type complaining. Coerced here rather than at each
+    field: ADR-0035's first version coerced the two fields `to_markdown`
+    renders and missed this module's *other* `safe_dump`, so every
+    `houston fix` lost its record to a `RepresenterError` that
+    `pipeline.WRITE_BACK_ERRORS` then swallowed into a warning."""
+    return yaml.safe_dump(
+        _plain(front_matter), sort_keys=False, allow_unicode=True,
+    )
+
+
+def _plain(value):
+    """Enum members become their values, all the way down -- the nested
+    `window`/`observed`/`cost` blocks are dicts too."""
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, dict):
+        return {key: _plain(item) for key, item in value.items()}
+    return value
 
 
 def _cost_block(cost: Cost) -> dict:
@@ -92,13 +119,13 @@ class Report:
     first_seen_ms: int | None
     last_seen_ms: int | None
     severity: str
-    state: str  # "new" | "promoted" | "discarded" | "seeded" | "incomplete" | "quarantined"
+    state: str  # a `report_state.ReportState` value -- that module owns the vocabulary
     body: str
     cost: Cost = field(default_factory=Cost)
     issue: str | None = None
     datadog_url: str | None = None
     fix_pr: str | None = None
-    fix_state: str | None = None  # "attempted" | "pr_open" | "merged" | "rejected" | "incomplete"
+    fix_state: str | None = None  # a `report_state.FixState` value; None until a fix runs
     # How many `houston fix` runs the numbers below are made of. Without it
     # a retry that fails behind an open PR leaves no trace at all -- the
     # state stands still by design (#34) and the only evidence would be a
@@ -148,15 +175,12 @@ class Report:
                 "last_seen": self.last_seen_ms,
             },
             "severity": self.severity,
-            # Coerced, not passed through: a `ReportState` member satisfies
-            # the `str` annotation and makes `yaml.safe_dump` raise
-            # RepresenterError at write time, after the run is paid for.
-            "state": str(self.state),
+            "state": self.state,
             "cost": _cost_block(self.cost),
             "issue": self.issue,
             "datadog_url": self.datadog_url,
             "fix_pr": self.fix_pr,
-            "fix_state": str(self.fix_state) if self.fix_state is not None else None,
+            "fix_state": self.fix_state,
         }
         # Conditional, unlike every key above it, because presence is the
         # signal: `metrics.compute` reads `if r.fix_cost` as "a fix ran on
@@ -165,7 +189,7 @@ class Report:
         if self.fix_cost is not None:
             front_matter["fix_attempts"] = self.fix_attempts
             front_matter["fix_cost"] = _cost_block(self.fix_cost)
-        yaml_block = yaml.safe_dump(front_matter, sort_keys=False, allow_unicode=True)
+        yaml_block = _dump_front_matter(front_matter)
         # Injected here, not asked from the model: this is the authoritative
         # URL the collector already computed, not something the agent should
         # construct or guess at investigation time.
@@ -261,6 +285,8 @@ def write_report(report: Report, store: ReportStore = DEFAULT_STORE) -> WriteRes
     typo used to reach disk, parse back as itself, and become its own row
     in `houston metrics`'s by-state table."""
     check_state(report.state)
+    if report.fix_state is not None:
+        check_fix_state(report.fix_state)
     markdown = report.to_markdown()
     hits = scan(markdown)
     if hits:
@@ -335,7 +361,7 @@ def _write_document(path: Path, front_matter: dict, body: str) -> None:
     the 153 committed reports gains keys on a re-render (none carries
     ADR-0023's `cost.model`, 16 predate ADR-0019's `novelty`), so a rewrite
     here would edit reports it was only meant to annotate."""
-    yaml_block = yaml.safe_dump(front_matter, sort_keys=False, allow_unicode=True)
+    yaml_block = _dump_front_matter(front_matter)
     # Written beside the target and renamed over it: `write_text` truncates
     # first, and this path now runs on every fix attempt, over a body that
     # was already paid for and exists nowhere else.
