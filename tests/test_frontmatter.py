@@ -316,3 +316,29 @@ def test_an_attempt_on_a_report_that_never_had_one_counts_as_the_first(store):
     record_fix_attempt(path, pr_url=None, state="incomplete", cost=Cost(usd=0.4))
 
     assert load_report(path).fix_attempts == 1
+
+
+def test_every_number_in_a_cost_accumulates_across_attempts(store):
+    """`_accumulated` lists Cost's fields by hand, and it is the one place
+    that does so without a test walking them. A field added to `Cost` later
+    is rendered, parsed and mapped correctly by the other four -- and
+    silently zeroed on every retry here, in the function whose whole job is
+    counting money. This walks the dataclass so that drift fails."""
+    numbers = {
+        f.name: 2 if isinstance(f.default, int) else 2.0
+        for f in dataclasses.fields(Cost) if f.name != "model"
+    }
+    path = _promoted_on_disk(
+        store, fix_attempts=1,
+        fix_cost=Cost(model="claude-sonnet-5", **numbers),
+    )
+
+    record_fix_attempt(
+        path, pr_url=None, state="incomplete",
+        cost=Cost(model="claude-sonnet-5", **numbers),
+    )
+
+    accumulated = load_report(path).fix_cost
+    for name, value in numbers.items():
+        assert getattr(accumulated, name) == value * 2, name
+    assert accumulated.model == "claude-sonnet-5"

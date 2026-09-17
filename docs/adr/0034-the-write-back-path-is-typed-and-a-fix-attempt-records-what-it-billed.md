@@ -83,6 +83,11 @@ zeroing a cost field. This settles the *duplication* ADR-0033 pointed at, not th
 prescribed: `Report.from_finding` still has no `cost` parameter, so the cost is still attached after
 construction and `frozen=True` is still not mechanical.
 
+**A command's stdout and exit code agree with what is on disk.** When the write-back fails,
+`houston promote --create` prints the issue URL (it exists) but not `state: promoted` (it does not),
+and exits 1; `houston fix` returns 0 only when the PR was both opened *and* recorded. A log that keeps
+only stdout, or a caller testing `$?`, would otherwise read the opposite of what stderr says.
+
 **A write-back that fails after the fact is reported, not raised.** `record_promotion` runs once the
 issue exists on GitHub, and `record_fix_attempt` once the agent run has billed. A malformed document
 or a permissions error at that point would otherwise escape as an unhandled traceback through a
@@ -106,7 +111,7 @@ to answer.
 - #34 cannot recur: no caller can express *zeroing* `fix_pr` (a real PR replaced by `None`). A retry that opens a second PR still replaces the URL -- see "Bad" below. Pinned by
   `test_a_failed_attempt_never_erases_the_pr_a_previous_one_opened`, which also asserts the failed
   retry's spend was added.
-- 279 tests pass (263 before, +16). `tests/test_report_corpus.py` is unedited and every existing
+- 281 tests pass (263 before, +18). `tests/test_report_corpus.py` is unedited and every existing
   assertion in `tests/test_report_golden.py` is untouched — the ADR-0029 rule that proves the report
   bytes did not move — and `mise run metrics` over the real 153-report corpus prints output
   byte-identical to the pre-change checkout, `diff`-verified. `ruff` clean.

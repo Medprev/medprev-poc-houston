@@ -282,3 +282,28 @@ def test_promote_create_leaves_the_report_untouched_when_gh_fails(
     assert front.state == "new"
     assert front.issue is None
     assert "HTTP 404" in capsys.readouterr().err
+
+
+def test_promote_create_does_not_claim_a_state_it_failed_to_write(store, capsys):
+    """The issue is real on GitHub by the time the write-back runs, so the
+    command cannot fail silently -- but it also cannot print the success
+    line. A log that only keeps stdout, or a caller that checks `$?`, would
+    otherwise read the opposite of what stderr says."""
+    path = _write(store, "et-half", _PT_BODY)
+    run, _ = _fake_gh()
+
+    def corrupt_then_file(cmd, *a, **kw):
+        # The document breaks between the command being built and the URL
+        # being written back: the shape of a concurrent edit or a crash.
+        if cmd[:3] == ["gh", "issue", "create"]:
+            path.write_text("not a valid document at all")
+        return run(cmd, *a, **kw)
+
+    with patch("houston.cli.subprocess.run", side_effect=corrupt_then_file):
+        exit_code = cmd_promote(_args("et-half", create=True))
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert _ISSUE_URL in captured.out          # the URL is not lost
+    assert "state: promoted" not in captured.out   # and not claimed either
+    assert "by hand" in captured.err
