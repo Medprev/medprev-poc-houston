@@ -14,9 +14,10 @@ this module owns. One exception, out of this module's scope:
 `frontmatter.record_promotion` and `frontmatter.record_fix_attempt` patch
 `issue`/`state` and `fix_pr`/`fix_state`/`fix_cost` into an existing
 document, bypassing both this store and the PII gate, because those values
-are code-owned (a URL `gh` printed, a state the CLI chose, a cost parsed
-from the model runner's envelope) rather than model text -- see ADR-0030's
-"Bad" section and ADR-0034. `quarantine`
+are code-owned or code-shaped (a state the CLI chose, a cost parsed from
+the model runner's envelope, a PR URL regexed out of the model's own stdout
+under a fixed shape) rather than free model text -- see ADR-0030's "Bad"
+section and ADR-0034. `quarantine`
 is a property, computed on every access from `self.root`, which is what
 makes the import-time-snapshot problem disappear by construction rather
 than by test discipline."""

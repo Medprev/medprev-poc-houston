@@ -313,11 +313,14 @@ def _write_document(path: Path, front_matter: dict, body: str) -> None:
     """Writes a document back exactly as `split_document` read it, with the
     front-matter re-serialized and the body untouched.
 
-    Values written this way are code-owned -- a URL `gh` printed, a state
-    the CLI chose, a cost the CLI parsed from the model runner's envelope --
-    never model text, so this does not re-run the PII gate over a body that
-    already passed it at write time (ADR-0030's "Bad" section records this
-    as a deliberate exception to `write_report()` being the only gated path).
+    Values written this way bypass the gate on the same grounds ADR-0030
+    already accepted for `issue`/`state`: a state the CLI chose, a cost the
+    CLI parsed from the model runner's envelope. `fix_pr` is the narrower
+    case -- `fix_agent._extract_pr_url` regexes it out of the model's own
+    stdout, so it is model-influenced text under a tight URL shape, not
+    code-constructed the way `issue` is. This does not re-run the PII gate
+    over a body that already passed it at write time (ADR-0030's "Bad"
+    section records the exception; ADR-0034 notes the `fix_pr` narrowing).
 
     Patches the document rather than re-rendering the `Report`: every one of
     the 153 committed reports gains keys on a re-render (none carries
@@ -376,8 +379,10 @@ def record_fix_attempt(
     `update_front_matter(path, fix_pr=None, fix_state="incomplete")` this
     replaces could only say "erase it". The pointer is singular, so a retry
     that *does* open a second PR replaces the URL: the newest PR is the one
-    the report points at, and the previous one stays reachable through the
-    issue it was opened against, not through the report (ADR-0034).
+    the report points at. `cli.py`'s `notify` posts the previous one to its
+    issue when it opened, so it is usually still reachable from there -- but
+    that post is a best-effort `gh` call with `check=False`, not a guarantee,
+    and the report itself never carries more than the latest URL (ADR-0034).
 
     Exactly one call per agent run -- `fix_attempts` counts calls, and
     nothing on disk identifies a run, so a second call for the same run

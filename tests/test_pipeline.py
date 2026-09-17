@@ -404,6 +404,39 @@ def test_billed_maps_every_number_both_agent_runs_report():
             assert getattr(cost, name) == value, f"{type(run).__name__}.{name}"
 
 
+def test_fix_report_survives_a_record_failure_after_a_paid_run(store, capsys):
+    """The run already happened and already billed by the time the write
+    fails -- a malformed document, a permissions error. Losing the PR URL or
+    the cost on top of that would double the damage, so the caller gets the
+    outcome back and a warning on stderr instead of a crash."""
+    finding = _finding("et-fix-crash", service="medprev-rest-api")
+    path = write_report(Report.from_finding(
+        finding, state="promoted", body="## Causa raiz\nfoo",
+    )).path
+
+    def fix_fn(**kwargs):
+        # The document is intact for fix_report's own read (state check,
+        # service resolution) and only breaks for record_fix_attempt's
+        # read after the run -- the shape of a crash mid-write, or a
+        # concurrent edit, not a report that was already unreadable.
+        path.write_text("not a valid document at all")
+        return FixResult(
+            pr_url="https://github.com/org/repo/pull/9", body="fixed",
+            input_tokens=1, output_tokens=1, duration_s=1.0, usd=1.5,
+            state="pr_open", branch="houston/fix/et-fix-crash",
+        )
+
+    outcome = fix_report(
+        "et-fix-crash", issue="https://github.com/org/repo/issues/1", fix_fn=fix_fn,
+        resolve_repo_fn=lambda service, body="": {"repo": "org/repo", "path": "/tmp/fake"},
+        runner=object(), max_budget_usd="3.00", timeout_s=600, model="sonnet",
+        effort="high", notify_fn=lambda url, msg: None,
+    )
+
+    assert outcome.result.pr_url == "https://github.com/org/repo/pull/9"
+    assert "spent $1.5000" in capsys.readouterr().err
+
+
 def test_fix_report_records_what_the_attempt_billed(store):
     """The FixResult -> front-matter mapping, end to end: an attempt that
     opens no PR still spent money, and the report is where that number is

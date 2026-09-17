@@ -53,8 +53,10 @@ O pipeline tem duas fases de agente e três decisões humanas:
 
 9. **Métricas** — `houston metrics` computa, lendo só o front-matter dos relatórios: taxa de falso
    positivo (`discarded` / decididos), gasto total, médio, p50 e p95 (e por estado), percentis de
-   token e duração, e se a fase pode fechar. O custo do fix agent não entra: ele é impresso pelo
-   comando e não gravado em lugar nenhum.
+   token e duração, e se a fase pode fechar. O gasto do fix agent é somado à parte, em
+   `fix_usd_total`, porque as duas corridas são precificadas em tiers pinados diferentes
+   (ADR-0034) — os três PRs de fix abertos antes do ADR-0034 não têm o gasto gravado e continuam
+   invisíveis nesse número.
 
 ### O que cada agente pode fazer
 
@@ -87,7 +89,7 @@ Task runner: [mise](https://mise.jdx.dev). `mise run <task>`, ou `mise tasks` pa
 | `mise run seed` | Registra achados pré-existentes como `state: seeded` | Não |
 | `mise run investigate` | Roda o agente de investigação nos achados novos | **Sim** — ~$0.30–0.42/finding |
 | `mise run promote <fp>` | Imprime o `gh issue create` pronto; com `--create`, abre a issue e grava a URL no report | Não |
-| `mise run fix <fp> --issue <url>` | Roda o agente de correção, abre PR | **Sim** — cap $3.00/fix; o gasto real não é gravado |
+| `mise run fix <fp> --issue <url>` | Roda o agente de correção, abre PR | **Sim** — cap $3.00/fix; o gasto é gravado em `fix_cost` (ADR-0034) |
 | `mise run metrics` | FP rate, gasto (total/médio/p50/p95), percentis de token e duração, prontidão de fase | Não |
 
 ## Ciclo diário (E7)

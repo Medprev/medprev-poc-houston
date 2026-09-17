@@ -96,7 +96,7 @@ to answer.
 
 ### Good
 
-- #34 cannot recur: no caller can express the erasure. Pinned by
+- #34 cannot recur: no caller can express *zeroing* `fix_pr` (a real PR replaced by `None`). A retry that opens a second PR still replaces the URL -- see "Bad" below. Pinned by
   `test_a_failed_attempt_never_erases_the_pr_a_previous_one_opened`, which also asserts the failed
   retry's spend was added.
 - 277 tests pass (263 before, +14). `tests/test_report_corpus.py` is unedited and every existing

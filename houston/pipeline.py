@@ -10,10 +10,13 @@ themselves. Everything else a `cmd_*` function used to do -- deciding what
 counts as a blocker, building a report, writing it through the gate --
 lives here, where it can be called and tested without a `Namespace`.
 """
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
+
+import yaml
 
 from houston.dedup import (
     cap,
@@ -453,10 +456,22 @@ def fix_report(
 
     # Recorded before notifying, and recorded on every outcome: `gh` not
     # being on PATH must not be what loses the URL of a PR the agent already
-    # pushed, and an attempt that ends without a PR still billed.
-    record_fix_attempt(
-        path, pr_url=result.pr_url, state=result.state, cost=billed(result),
-    )
+    # pushed, and an attempt that ends without a PR still billed. A write
+    # failure here (a malformed document, a permissions error) must not cost
+    # the operator the PR URL or cost figure a paid run already produced --
+    # this is the one caller allowed to see it happen and still hand back
+    # what the run achieved, printed rather than raised.
+    try:
+        record_fix_attempt(
+            path, pr_url=result.pr_url, state=result.state, cost=billed(result),
+        )
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        print(
+            f"warning: fix attempt for {fingerprint} spent ${result.usd:.4f} and "
+            f"{'opened ' + result.pr_url if result.pr_url else 'did not open a PR'}, "
+            f"but recording it on the report failed: {exc}",
+            file=sys.stderr,
+        )
     if result.pr_url:
         notify_fn(issue_url, f"PR aberto pelo Houston fix agent: {result.pr_url}")
 
