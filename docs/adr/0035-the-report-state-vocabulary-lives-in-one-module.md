@@ -26,12 +26,18 @@ exists to produce. Measured on `origin/main` (`0475f8c`), it had no owner.
    would have been rendered, written, parsed back as itself, and counted as its own row in
    `houston metrics`'s by-state table — with a green suite, because no test writes a typo.
 
-3. **An unreadable state left the queue permanently.** ADR-0033 made the parser total, so an absent
+3. **`state:` written with no value parses to `None`, not `""`.** ADR-0033 assumed the empty string,
+   which is what an *absent* key gives. An explicit `state:` with a blank value gives `None` —
+   satisfying neither `Report.state`'s own `str` annotation nor `sorted()` over
+   `houston metrics`'s by-state table, which raised `TypeError` and printed nothing at all. The
+   state this ADR exists to surface was the one that hid the entire report.
+
+4. **An unreadable state left the queue permanently.** ADR-0033 made the parser total, so an absent
    `state` key parses to `""`. `"" not in BLOCKING_STATES` is False, so such a report did not block
    the phase; `"" not in NEEDS_INVESTIGATION_STATES` is also False, so it was never re-investigated
    either. ADR-0033 recorded this as measured debt: "the typed path makes it look deliberate."
 
-4. **`fix_state`'s vocabulary was partly fiction.** `Report.fix_state`'s comment listed
+5. **`fix_state`'s vocabulary was partly fiction.** `Report.fix_state`'s comment listed
    `attempted | pr_open | merged | rejected | incomplete`. `pr_open` and `incomplete` are written by
    `fix_agent.fix`; `merged` and `rejected` are the reviewer's verdict on the PR and no code writes
    them; **`attempted` appears nowhere** — not in the package, not in the 153-report corpus, not in
@@ -85,6 +91,11 @@ them to write `fix_state: merged` by hand. Applying the write rule there made th
 153 reports refuse a report because a human had followed the documentation — the mirror image of the
 `safe_dump` defect below, one rule applied at one site and not the other.
 
+**The producer joined the vocabulary too.** `agent.py` writes the report states the pipeline
+records (`new`, `incomplete`) and was the fifth place spelling them as literals — which is what made
+`pipeline`'s `result.state == FixState.INCOMPLETE` comparison pass by coincidence rather than by
+type. `InvestigationResult.state` is a `ReportState` now.
+
 **`attempted` is deleted rather than kept.** `merged` and `rejected` stay in `FixState`, marked in
 code as human-owned with no writer: that is the real workflow `docs/pipeline.md` draws, and naming
 them is how the gap stays visible instead of looking like an oversight.
@@ -95,7 +106,7 @@ them is how the gap stays visible instead of looking like an oversight.
 
 - The vocabulary is in one place, and `DISPLAY_ORDER` is covered by a test that compares it against
   the enum — a state added later cannot silently disappear from the incident page.
-- 296 tests pass (281 before, +15). `reports/` is untouched, `tests/test_report_golden.py` and
+- 298 tests pass (281 before, +17). `reports/` is untouched, `tests/test_report_golden.py` and
   `tests/test_report_corpus.py` are unedited, and `mise run metrics` over the real 153-report corpus
   prints output byte-identical to the pre-change checkout, `diff`-verified. `ruff` clean.
 - The two central tests are verified by mutation, not by passing: making an unreadable state
@@ -123,8 +134,12 @@ them is how the gap stays visible instead of looking like an oversight.
   breakdown now names it too; the site's counter strip still skips it, because it iterates
   `DISPLAY_ORDER`.
 
-### Follow-up
+### Follow-up (continued)
 
+- The two enums share values (`incomplete` is in both), so `check_fix_state(ReportState.INCOMPLETE)`
+  passes: `StrEnum` gives naming, not type separation. Real separation would mean non-overlapping
+  values or `NewType` wrappers, neither worth its cost while the two lifecycles are four writers
+  apart.
 - A `houston decide <fingerprint> --promote|--discard` command would give `discarded` a writer and put
   the transition under the same validation as the rest. It is a new command, not a refactor, so it is
   not in #37's sequence.

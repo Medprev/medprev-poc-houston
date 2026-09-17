@@ -241,8 +241,12 @@ class Report:
             observed_count=observed.get("count") or 0,
             first_seen_ms=observed.get("first_seen"),
             last_seen_ms=observed.get("last_seen"),
-            severity=front_matter.get("severity", ""),
-            state=front_matter.get("state", ""),
+            severity=front_matter.get("severity") or "",
+            # `or ""`, not a default: `state:` written with no value parses to
+            # None, which satisfies neither the field's annotation nor
+            # `sorted()` in `houston metrics`'s by-state table. ADR-0033
+            # assumed the empty string; YAML produces None.
+            state=front_matter.get("state") or "",
             body=body,
             cost=_cost_from(front_matter.get("cost")),
             issue=front_matter.get("issue"),
@@ -435,7 +439,6 @@ def record_fix_attempt(
 
     Reads the document rather than taking one the caller already read: an
     agent run of minutes sits between `fix_report`'s read and this write."""
-    check_writable_fix_state(state)
     front_matter, body = split_document(path.read_text())
     recorded_pr = front_matter.get("fix_pr")
     # Built in the order `to_markdown` renders them, so a report that had no
@@ -445,6 +448,10 @@ def record_fix_attempt(
     if pr_url:
         fields["fix_pr"] = pr_url
     if pr_url or not recorded_pr:
+        # Checked here rather than on entry: this is the only branch that
+        # writes it, and refusing before `fields` is built would cost a run
+        # that already billed its cost and attempt count (ADR-0013).
+        check_writable_fix_state(state)
         fields["fix_state"] = state
     fields["fix_attempts"] = (front_matter.get("fix_attempts") or 0) + 1
     fields["fix_cost"] = _cost_block(

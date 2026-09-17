@@ -14,9 +14,10 @@ from houston.frontmatter import (
     record_fix_attempt,
     write_report,
 )
-from houston.metrics import can_close_phase
+from houston.metrics import can_close_phase, compute
 from houston.models import Finding
 from houston.report_state import (
+    BLOCKING,
     DISPLAY_ORDER,
     FixState,
     ReportState,
@@ -170,6 +171,19 @@ def test_parse_maps_a_known_state_and_refuses_the_rest():
     assert parse(None) is None
 
 
+def test_every_state_is_classified_as_blocking_or_not():
+    """`BLOCKING` is written out by hand next to `DISPLAY_ORDER`, and only
+    the second had a drift test. A state added to the enum and forgotten
+    here stops blocking `can_close_phase` with a green suite -- the exact
+    bug class this module exists to kill."""
+    classified = set(BLOCKING) | {ReportState.SEEDED, ReportState.PROMOTED,
+                                  ReportState.DISCARDED}
+
+    assert classified == set(ReportState), (
+        "a new state must be decided: does the phase wait on it?"
+    )
+
+
 def test_the_display_order_covers_every_state():
     """`generate_site` renders by this order and drops what is missing from
     it -- a state added to the enum and forgotten here disappears from the
@@ -202,3 +216,25 @@ def test_a_fix_state_passed_as_an_enum_member_reaches_disk(store):
     assert parsed.fix_pr == "https://github.com/org/repo/pull/7"
     assert parsed.fix_cost.usd == 0.9
     assert "fix_state: pr_open" in path.read_text()  # the value, not a tag
+
+
+def test_a_state_key_written_with_no_value_does_not_crash_the_metrics(store):
+    """ADR-0033 assumed an absent state parses to the empty string. A `state:`
+    key written with no value parses to **None** -- which is not a `str`, and
+    `sorted()` over a by-state table mixing None and real states raises
+    TypeError before `houston metrics` prints anything at all. The state this
+    ADR exists to surface was the one that hid the whole report."""
+    blank = Report.from_markdown(
+        "---\nfingerprint: et-blank\nstate:\ncost:\n  usd: 0.1\n---\n\ncorpo\n"
+    )
+    real = Report.from_markdown(
+        "---\nfingerprint: et-real\nstate: new\ncost:\n  usd: 0.1\n---\n\ncorpo\n"
+    )
+
+    assert blank.state == ""  # a str, as the field declares
+    metrics = compute([blank, real])
+    assert sorted(metrics.by_state.items())  # the table renders at all
+
+    can_close, pending = can_close_phase([blank, real])
+    assert can_close is False
+    assert pending == 2  # the blank one is owed work too

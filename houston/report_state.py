@@ -67,9 +67,10 @@ DISPLAY_ORDER = (
     ReportState.DISCARDED,
     ReportState.SEEDED,
 )
-# `seeded` is deliberate pre-existing debt and `incomplete` is a run to redo;
-# both are still owed an investigation, and neither blocks the phase for it
-# (ADR-0010, ADR-0015).
+# Still owed an investigation. The two sets overlap on purpose: `incomplete`
+# is both owed a rerun and a blocker (the run failed and was paid for), while
+# `seeded` is deliberate pre-existing debt that blocks nothing (ADR-0010,
+# ADR-0015).
 NEEDS_INVESTIGATION = frozenset({ReportState.SEEDED, ReportState.INCOMPLETE})
 
 

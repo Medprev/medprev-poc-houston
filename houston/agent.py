@@ -28,6 +28,7 @@ from pathlib import Path
 
 from houston.model_runner import DEFAULT_RUNNER, ModelRun, ModelRunner
 from houston.models import Finding
+from houston.report_state import ReportState
 from houston.timestamps import canonicalize, format_ms
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -216,7 +217,7 @@ class InvestigationResult:
     output_tokens: int
     duration_s: float
     usd: float
-    state: str  # "new" (investigated) | "incomplete" (failed/timed out)
+    state: str  # a `report_state.ReportState`: NEW when investigated, INCOMPLETE when not
     error: str | None = None
     # The model the CLI reports having actually billed, not the alias we
     # asked for -- diagnosing ADR-0023 required deriving the model from
@@ -315,7 +316,7 @@ def _result(
     duration_ms = (payload or {}).get("duration_ms")
     body = None
     warnings: list[str] = []
-    if state == "new":
+    if state == ReportState.NEW:
         raw_result = (payload or {}).get("result")
         if raw_result:
             body, warnings = canonicalize(raw_result)
@@ -395,7 +396,7 @@ def investigate(
     if outcome.timed_out:
         partial = _payload_or_none(outcome.stdout)
         return _result(
-            partial, "incomplete",
+            partial, ReportState.INCOMPLETE,
             error=_error_text(partial, "", prefix=f"timed out after {timeout_s}s"),
             fallback_duration_s=float(timeout_s),
             requested_model=model,
@@ -404,18 +405,20 @@ def investigate(
     payload = _payload_or_none(outcome.stdout)
 
     if outcome.returncode != 0:
-        return _result(payload, "incomplete", error=_error_text(payload, outcome.stderr),
+        return _result(payload, ReportState.INCOMPLETE,
+                       error=_error_text(payload, outcome.stderr),
                        requested_model=model)
 
     if payload is None:
         return _result(
-            None, "incomplete",
+            None, ReportState.INCOMPLETE,
             error=f"non-JSON stdout: {outcome.stdout[:500]}",
             requested_model=model,
         )
 
     if payload.get("is_error") or not payload.get("result"):
-        return _result(payload, "incomplete", error=_error_text(payload, outcome.stderr),
+        return _result(payload, ReportState.INCOMPLETE,
+                       error=_error_text(payload, outcome.stderr),
                        requested_model=model)
 
     return _result(payload, "new", requested_model=model)
