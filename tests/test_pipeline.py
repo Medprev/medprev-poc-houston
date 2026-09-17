@@ -20,6 +20,7 @@ from houston.models import Finding
 from houston.pipeline import (
     PipelineError,
     PromotionBlocked,
+    billed,
     build_promote_command,
     fix_report,
     investigate_findings,
@@ -379,6 +380,95 @@ def test_fix_report_records_the_pr_and_notifies_the_issue(store):
     parsed = load_report(store / "et-fix-ok.md")
     assert parsed.fix_pr == "https://github.com/org/repo/pull/1"
     assert parsed.fix_state == "pr_open"
+    assert parsed.fix_cost.usd == 1.5
+
+
+def test_billed_maps_every_number_both_agent_runs_report():
+    """The Protocol's claim, checked rather than assumed: the investigation
+    and the fix report the same seven names. A rename on either side would
+    otherwise zero a cost field with both dataclasses still valid, and the
+    report is where those numbers are read from."""
+    numbers = {
+        "input_tokens": 90000, "output_tokens": 4200, "duration_s": 311.5,
+        "usd": 1.84, "cache_read_input_tokens": 80000,
+        "cache_creation_input_tokens": 3000, "model": "claude-sonnet-5",
+    }
+    runs = [
+        InvestigationResult(body="x", state="new", **numbers),
+        FixResult(pr_url=None, body=None, state="incomplete", **numbers),
+    ]
+
+    for run in runs:
+        cost = billed(run)
+        for name, value in numbers.items():
+            assert getattr(cost, name) == value, f"{type(run).__name__}.{name}"
+
+
+def test_fix_report_survives_a_record_failure_after_a_paid_run(store):
+    """The run already happened and already billed by the time the write
+    fails -- a malformed document, a permissions error. Losing the PR URL or
+    the cost on top of that would double the damage, so the caller gets the
+    outcome back and a warning on stderr instead of a crash."""
+    finding = _finding("et-fix-crash", service="medprev-rest-api")
+    path = write_report(Report.from_finding(
+        finding, state="promoted", body="## Causa raiz\nfoo",
+    )).path
+
+    def fix_fn(**kwargs):
+        # The document is intact for fix_report's own read (state check,
+        # service resolution) and only breaks for record_fix_attempt's
+        # read after the run -- the shape of a crash mid-write, or a
+        # concurrent edit, not a report that was already unreadable.
+        path.write_text("not a valid document at all")
+        return FixResult(
+            pr_url="https://github.com/org/repo/pull/9", body="fixed",
+            input_tokens=1, output_tokens=1, duration_s=1.0, usd=1.5,
+            state="pr_open", branch="houston/fix/et-fix-crash",
+        )
+
+    warnings = []
+    outcome = fix_report(
+        "et-fix-crash", issue="https://github.com/org/repo/issues/1", fix_fn=fix_fn,
+        resolve_repo_fn=lambda service, body="": {"repo": "org/repo", "path": "/tmp/fake"},
+        runner=object(), max_budget_usd="3.00", timeout_s=600, model="sonnet",
+        effort="high", notify_fn=lambda url, msg: None, on_warning=warnings.append,
+    )
+
+    assert outcome.result.pr_url == "https://github.com/org/repo/pull/9"
+    assert len(warnings) == 1
+    assert "spent $1.5000" in warnings[0]
+    assert "pull/9" in warnings[0]
+
+
+def test_fix_report_records_what_the_attempt_billed(store):
+    """The FixResult -> front-matter mapping, end to end: an attempt that
+    opens no PR still spent money, and the report is where that number is
+    read from (`houston metrics`)."""
+    finding = _finding("et-fix-paid", service="medprev-rest-api")
+    write_report(Report.from_finding(finding, state="promoted", body="## Causa raiz\nfoo"))
+
+    def fix_fn(**kwargs):
+        return FixResult(
+            pr_url=None, body=None, input_tokens=90000, output_tokens=4200,
+            duration_s=311.5, usd=1.84, state="incomplete",
+            error="agent finished but no PR URL found in output",
+            cache_read_input_tokens=80000, cache_creation_input_tokens=3000,
+            model="claude-sonnet-5",
+        )
+
+    fix_report(
+        "et-fix-paid", issue="https://github.com/org/repo/issues/1", fix_fn=fix_fn,
+        resolve_repo_fn=lambda service, body="": {"repo": "org/repo", "path": "/tmp/fake"},
+        runner=object(), max_budget_usd="3.00", timeout_s=600, model="sonnet",
+        effort="high", notify_fn=lambda url, msg: None,
+    )
+
+    parsed = load_report(store / "et-fix-paid.md")
+    assert parsed.fix_cost.usd == 1.84
+    assert parsed.fix_cost.input_tokens == 90000
+    assert parsed.fix_cost.model == "claude-sonnet-5"
+    assert parsed.fix_state == "incomplete"
+    assert parsed.cost.usd == 0.0  # the investigation's own cost, untouched
 
 
 # ---------------------------------------------------------------------------
@@ -617,3 +707,27 @@ def test_the_filed_issue_body_keeps_the_datadog_link(store):
 
     assert command.issue_body.startswith("**Link do Datadog:**")
     assert "Seeded, not investigated." in command.issue_body
+
+
+def test_promote_report_hands_back_the_url_when_the_write_back_fails(store):
+    """The issue exists on GitHub by the time `record_promotion` runs, so a
+    write that fails there must not take the URL with it -- the operator
+    needs it to finish by hand, and the next run would file a duplicate."""
+    finding = _finding("et-promote-crash", service="medprev-rest-api")
+    path = write_report(Report.from_finding(
+        finding, state="new", body="## Corpo da issue\ncorpo",
+    )).path
+    command = build_promote_command("et-promote-crash")
+    path.write_text("not a valid document at all")  # the write-back will raise
+    warnings = []
+
+    url = promote_report(
+        command, account="carlacurymed", required_account="carlacurymed",
+        create_issue_fn=lambda title, body: "https://github.com/org/repo/issues/7",
+        on_warning=warnings.append,
+    )
+
+    assert url == "https://github.com/org/repo/issues/7"
+    assert len(warnings) == 1
+    assert "issues/7" in warnings[0]
+    assert "by hand" in warnings[0]

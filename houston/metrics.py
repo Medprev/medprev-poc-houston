@@ -26,12 +26,23 @@ class Metrics:
     input_tokens_p95: float
     duration_s_p50: float
     duration_s_p95: float
-    usd_total: float
+    usd_total: float  # investigation spend only -- see fix_usd_total
     usd_mean: float
     usd_p50: float
     usd_p95: float
     with_issue_link: int  # reports carrying an issue URL Houston's promote flow put there
     usd_by_state: dict[str, float] = field(default_factory=dict)
+    # `houston fix` bills a second agent run, on its own pinned tier, after
+    # the investigation is already paid for. Summed apart from `usd_total`
+    # because a per-finding investigation cost that silently included a fix
+    # run would stop answering the question this PoC exists to answer
+    # (ADR-0001).
+    fix_usd_total: float = 0.0
+    with_fix_run: int = 0
+
+    @property
+    def usd_grand_total(self) -> float:
+        return self.usd_total + self.fix_usd_total
 
 
 def _percentile(values: list[float], pct: float) -> float:
@@ -65,6 +76,7 @@ def compute(reports: list[Report]) -> Metrics:
     # aggregated here rather than added up by hand from the report files.
     spends = [r.cost.usd for r in reports]
     paid = [v for v in spends if v]
+    fix_spends = [r.fix_cost.usd for r in reports if r.fix_cost]
 
     return Metrics(
         total=len(reports),
@@ -85,6 +97,8 @@ def compute(reports: list[Report]) -> Metrics:
         usd_p95=_percentile(paid, 0.95),
         with_issue_link=sum(1 for r in reports if r.issue),
         usd_by_state=usd_by_state,
+        fix_usd_total=sum(fix_spends),
+        with_fix_run=len(fix_spends),
     )
 
 

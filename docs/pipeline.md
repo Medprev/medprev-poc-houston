@@ -49,7 +49,7 @@ flowchart TD
         U --> V["claude -p<br>--allowedTools Bash,Read,Write,Edit,Glob,Grep<br>budget $3.00 · timeout 600s<br>cwd = worktree<br>stdin = report completo"]
         V --> W{agent encontrou<br>e corrigiu?}
         W -->|sim| X["commit + push branch<br>gh pr create closes #issue"]
-        W -->|nao| Y["fix_state: incomplete<br>custo registrado"]
+        W -->|nao| Y["fix_state: incomplete se nao ha PR no disco<br>(congelado se ha, ADR-0034)<br>fix_cost += custo da tentativa"]
         X --> Z["gh issue comment: PR aberto"]
         Z --> AA["front-matter atualizado:<br>fix_pr + fix_state: pr_open"]
     end

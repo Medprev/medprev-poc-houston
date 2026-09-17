@@ -13,6 +13,7 @@ lives here, where it can be called and tested without a `Namespace`.
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Protocol
 
 import yaml
 
@@ -25,14 +26,52 @@ from houston.dedup import (
 from houston.fix_agent import FixResult
 from houston.frontmatter import (
     QUARANTINED_STATE,
+    Cost,
     Report,
     WriteResult,
+    record_fix_attempt,
+    record_promotion,
     split_document,
     write_report,
 )
 from houston.model_runner import ModelRunner
 from houston.models import Finding
 from houston.report_store import DEFAULT_STORE, ReportStore
+
+# What the document writers raise when a report on disk is not the shape
+# they expect: no file, no `---` fences, a front-matter key holding a scalar
+# where a mapping belongs, a cost value stored as a string. Every one of them
+# lands *after* the step that already happened for real -- an issue filed on
+# GitHub, an agent run billed -- so the use case reports it rather than dying
+# on it and taking the URL or the cost figure with it.
+WRITE_BACK_ERRORS = (AttributeError, OSError, TypeError, ValueError, yaml.YAMLError)
+
+
+class BilledRun(Protocol):
+    """What both agent runs report back. `agent.InvestigationResult` and
+    `fix_agent.FixResult` carry the same seven numbers under the same names,
+    so the mapping onto `Cost` is written once -- the investigation path used
+    to copy them field by field after construction, which is the shape of
+    drift that dropped `fix_pr`/`fix_state` in #35."""
+    input_tokens: int
+    output_tokens: int
+    duration_s: float
+    usd: float
+    cache_read_input_tokens: int
+    cache_creation_input_tokens: int
+    model: str | None
+
+
+def billed(run: BilledRun) -> Cost:
+    return Cost(
+        input_tokens=run.input_tokens,
+        output_tokens=run.output_tokens,
+        duration_s=run.duration_s,
+        usd=run.usd,
+        cache_read_input_tokens=run.cache_read_input_tokens,
+        cache_creation_input_tokens=run.cache_creation_input_tokens,
+        model=run.model,
+    )
 
 
 class PipelineError(Exception):
@@ -139,25 +178,6 @@ def promotion_blockers(
     if raw:
         blockers.append(f"issue body carries unexpanded markers: {', '.join(raw)}")
     return blockers
-
-
-def update_front_matter(path: Path, **fields) -> None:
-    """Writes structured fields back into an existing report.
-
-    Values here are code-owned -- a URL `gh` printed, a state this CLI
-    chose -- never model text, so this does not re-run the PII gate over
-    a body that already passed it at write time (ADR-0030's "Bad" section
-    records this as a deliberate, still-open exception to
-    `write_report()` being the only gated path).
-
-    Patches the document rather than re-rendering the `Report`: every one of
-    the 153 committed reports gains keys on a re-render (none carries
-    ADR-0023's `cost.model`, 16 predate ADR-0019's `novelty`), so a rewrite
-    here would edit reports it was only meant to annotate."""
-    fm, body = split_document(path.read_text())
-    fm.update(fields)
-    yaml_block = yaml.safe_dump(fm, sort_keys=False, allow_unicode=True)
-    path.write_text(f"---\n{yaml_block}---{body}")
 
 
 # ---------------------------------------------------------------------------
@@ -300,13 +320,7 @@ def investigate_findings(
             ))
         else:
             report = Report.from_finding(finding, state="new", body=result.body)
-        report.cost.input_tokens = result.input_tokens
-        report.cost.output_tokens = result.output_tokens
-        report.cost.cache_read_input_tokens = result.cache_read_input_tokens
-        report.cost.cache_creation_input_tokens = result.cache_creation_input_tokens
-        report.cost.duration_s = result.duration_s
-        report.cost.usd = result.usd
-        report.cost.model = result.model
+        report.cost = billed(result)
         write_result = write_report(report, store)
         outcome = InvestigationOutcome(
             finding=finding, write=write_result,
@@ -358,6 +372,7 @@ def promote_report(
     account: str | None,
     required_account: str,
     create_issue_fn: Callable[[str, str], str | None],
+    on_warning: Callable[[str], None] = lambda _: None,
 ) -> str:
     """Files the issue and records `issue:` + `state: promoted`. Raises
     PromotionBlocked when a guard refuses before anything is filed
@@ -378,7 +393,14 @@ def promote_report(
     if url is None:
         raise PipelineError("gh issue create failed -- report left untouched")
 
-    update_front_matter(command.path, issue=url, state="promoted")
+    try:
+        record_promotion(command.path, url)
+    except WRITE_BACK_ERRORS as exc:
+        on_warning(
+            f"issue filed at {url}, but recording it on {command.path.name} failed: "
+            f"{exc} -- write `issue: {url}` and `state: promoted` by hand, or the "
+            f"next run will file it again"
+        )
     return url
 
 
@@ -406,6 +428,7 @@ def fix_report(
     effort: str,
     notify_fn: Callable[[str, str], None] = lambda *_: None,
     on_start: Callable[[dict, str], None] = lambda *_: None,
+    on_warning: Callable[[str], None] = lambda _: None,
     store: ReportStore = DEFAULT_STORE,
 ) -> FixOutcome:
     """Creates a PR that fixes a promoted finding. Costs money -- runs a
@@ -447,12 +470,24 @@ def fix_report(
         model=model, effort=effort, runner=runner,
     )
 
+    # Recorded before notifying, and recorded on every outcome: `gh` not
+    # being on PATH must not be what loses the URL of a PR the agent already
+    # pushed, and an attempt that ends without a PR still billed. A write
+    # failure here (a malformed document, a permissions error) must not cost
+    # the operator the PR URL or cost figure a paid run already produced --
+    # this is the one caller allowed to see it happen and still hand back
+    # what the run achieved, printed rather than raised.
+    try:
+        record_fix_attempt(
+            path, pr_url=result.pr_url, state=result.state, cost=billed(result),
+        )
+    except WRITE_BACK_ERRORS as exc:
+        on_warning(
+            f"fix attempt for {fingerprint} spent ${result.usd:.4f} and "
+            f"{'opened ' + result.pr_url if result.pr_url else 'did not open a PR'}, "
+            f"but recording it on the report failed: {exc}"
+        )
     if result.pr_url:
-        # Record before notifying: `gh` not being on PATH must not be what
-        # loses the URL of a PR the agent already pushed and billed for.
-        update_front_matter(path, fix_pr=result.pr_url, fix_state=result.state)
         notify_fn(issue_url, f"PR aberto pelo Houston fix agent: {result.pr_url}")
-    elif result.error:
-        update_front_matter(path, fix_pr=None, fix_state="incomplete")
 
     return FixOutcome(repo_info=repo_info, issue_url=issue_url, result=result)

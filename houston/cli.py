@@ -77,6 +77,9 @@ def cmd_metrics(args: argparse.Namespace) -> int:
             f"{state}=${spent:.4f}" for state, spent in sorted(m.usd_by_state.items())
         )
         print(f"spend by state: {by_state}")
+    if m.with_fix_run:
+        print(f"fix spend: ${m.fix_usd_total:.4f} over {m.with_fix_run} report(s)  "
+              f"— investigation + fix: ${m.usd_grand_total:.4f}")
     print(f"input tokens  p50={m.input_tokens_p50:.0f}  p95={m.input_tokens_p95:.0f}")
     print(f"duration (s)  p50={m.duration_s_p50:.1f}  p95={m.duration_s_p95:.1f}")
 
@@ -169,6 +172,28 @@ def create_issue(title: str, body: str) -> str | None:
     return urls[-1] if urls else None
 
 
+class _Warnings:
+    """Collects what a use case reports about something that already happened
+    for real -- an issue filed, an agent run billed -- but could not be
+    written back to the report. Printing stays in this module (ADR-0032); the
+    use cases hand the text over through a callback.
+
+    Collected rather than only printed, because the command's *own* output
+    has to agree with it: a write-back that failed means the report on disk
+    does not say what a success line would claim, and an exit code of 0 would
+    tell a script the opposite of what stderr tells a human."""
+
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+
+    def __call__(self, message: str) -> None:
+        self.messages.append(message)
+        print(f"warning: {message}", file=sys.stderr)
+
+    def __bool__(self) -> bool:
+        return bool(self.messages)
+
+
 def cmd_promote(args: argparse.Namespace) -> int:
     """Prints a ready gh issue create command for a report, and with
     --create runs it and records the result.
@@ -197,10 +222,11 @@ def cmd_promote(args: argparse.Namespace) -> int:
               f"issue and record it in {command.path} automatically")
         return 0
 
+    warnings = _Warnings()
     try:
         url = promote_report(
             command, account=active_gh_account(), required_account=ISSUE_ACCOUNT,
-            create_issue_fn=create_issue,
+            create_issue_fn=create_issue, on_warning=warnings,
         )
     except PromotionBlocked as exc:
         for blocker in exc.blockers:
@@ -211,6 +237,8 @@ def cmd_promote(args: argparse.Namespace) -> int:
         return 1
 
     print(f"issue: {url}")
+    if warnings:
+        return 1  # the issue exists; the report does not say so yet
     print(f"{command.path}: state: promoted")
     return 0
 
@@ -231,13 +259,14 @@ def cmd_fix(args: argparse.Namespace) -> int:
         print(f"  model: {args.model} @ effort {args.effort}")
         print(f"  budget: ${args.max_budget_usd}  timeout: {args.timeout_s}s", flush=True)
 
+    warnings = _Warnings()
     try:
         outcome = fix_report(
             args.fingerprint, issue=args.issue, fix_fn=agent_fix,
             resolve_repo_fn=resolve_repo, runner=DEFAULT_RUNNER,
             max_budget_usd=args.max_budget_usd, timeout_s=args.timeout_s,
             model=args.model, effort=args.effort, notify_fn=notify,
-            on_start=on_start,
+            on_start=on_start, on_warning=warnings,
         )
     except PipelineError as exc:
         print(str(exc), file=sys.stderr)
@@ -250,7 +279,10 @@ def cmd_fix(args: argparse.Namespace) -> int:
     elif result.error:
         print(f"  error: {result.error}", file=sys.stderr)
 
-    return 0 if result.pr_url else 1
+    # A recorded PR is the success condition, and "recorded" is the part a
+    # script can act on: the run having opened one is not enough if the
+    # report never got it.
+    return 0 if result.pr_url and not warnings else 1
 
 
 def main(argv: list[str] | None = None) -> int:
