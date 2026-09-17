@@ -23,6 +23,7 @@ from houston.report_state import (
     blocks_phase,
     check_fix_state,
     check_state,
+    check_writable_fix_state,
     needs_investigation,
     parse,
 )
@@ -113,7 +114,25 @@ def test_every_state_a_writer_produces_is_in_the_vocabulary():
                   ReportState.QUARANTINED, ReportState.PROMOTED):
         check_state(state)
     for fix_state in (FixState.PR_OPEN, FixState.INCOMPLETE):
-        check_fix_state(fix_state)
+        check_writable_fix_state(fix_state)
+
+
+def test_a_verdict_a_human_recorded_survives_a_rewrite(store):
+    """The other half of the same rule, and the one the first version got
+    backwards: `docs/pipeline.md` tells a human to write `fix_state: merged`
+    by hand, and `write_report` is what the migration over all 153 reports
+    goes through. Narrowing there made the migration refuse a report because
+    a human followed the documentation."""
+    report = _report(ReportState.PROMOTED)
+    report.fix_pr = "https://github.com/org/repo/pull/1372"
+    report.fix_state = FixState.MERGED
+    report.fix_cost = Cost(usd=1.5, model="claude-sonnet-5")
+
+    result = write_report(report)
+
+    assert result.written
+    assert load_report(result.path).fix_state == "merged"
+    check_fix_state("merged")  # a vocabulary question, and merged is in it
 
 
 def test_a_reviewers_verdict_is_readable_vocabulary_that_code_cannot_write(store):

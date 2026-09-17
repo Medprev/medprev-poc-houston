@@ -1,19 +1,21 @@
 """The report's state vocabulary, and the two questions the rest of the
 package asks about it.
 
-Before this module the vocabulary was four lists in four modules, none of
-them authoritative: `dedup.NEEDS_INVESTIGATION_STATES`,
-`metrics.BLOCKING_STATES`, `generate_site._STATE_ORDER`, and a comment on
-`Report.state`. The only exhaustive ones were that comment and a set literal
-inside a test. Nothing validated a state on the way to disk, so `state:
-promted` would have been written, parsed back, and counted as its own state
-by `houston metrics`.
+Before this module the vocabulary was six partial lists, none of them
+authoritative: four that ran -- `dedup.NEEDS_INVESTIGATION_STATES`,
+`metrics.BLOCKING_STATES`, `generate_site._STATE_ORDER`,
+`frontmatter.QUARANTINED_STATE` -- and two written as comments, on
+`Report.state` and `Report.fix_state`, which were the only exhaustive ones
+along with a set literal inside a test. Nothing validated a state on the way
+to disk, so `state: promted` would have been written, parsed back, and
+counted as its own state by `houston metrics`.
 
 Values are kept as plain `str` on `Report`, not as enum members:
 `yaml.safe_dump` refuses a `StrEnum` (`RepresenterError`), and the rendered
 bytes of 153 committed reports are the product (ADR-0029). The enum is what
-code compares and decides with; `to_markdown` coerces with `str()` so
-passing a member is safe rather than a crash at write time.
+code compares and decides with; `frontmatter._dump_front_matter` coerces the
+whole mapping in the one place both render paths pass through, so passing a
+member is safe rather than a crash at write time.
 """
 from enum import StrEnum
 
@@ -110,22 +112,35 @@ def check_state(raw: str) -> None:
     its own row in `houston metrics`'s by-state table."""
     if parse(raw) is None:
         known = ", ".join(s.value for s in ReportState)
-        raise ValueError(f"unknown report state {raw!r} -- known states are: {known}")
+        raise ValueError(
+            f"unknown report state {str(raw)!r} -- known states are: {known}"
+        )
 
 
 def check_fix_state(raw: str) -> None:
-    """Refuses a fix state a writer is about to put on disk -- including the
-    two only a human can mean."""
+    """Refuses a fix state outside the vocabulary.
+
+    Document-level: `merged`/`rejected` pass, because a human is told to
+    record them by hand (`docs/pipeline.md`), and the migration that
+    rewrites all 153 reports has to carry what a human wrote."""
     try:
-        state = FixState(raw)
+        FixState(raw)
     except ValueError:
         known = ", ".join(s.value for s in FixState)
         raise ValueError(
-            f"unknown fix state {raw!r} -- known states are: {known}"
+            f"unknown fix state {str(raw)!r} -- known states are: {known}"
         ) from None
-    if state not in WRITABLE_FIX:
+
+
+def check_writable_fix_state(raw: str) -> None:
+    """Refuses a fix state *code* may not write, the reviewer's verdict
+    included. Narrower than `check_fix_state` on purpose: the two questions
+    are "is this a fix state at all" (a document, which a human may have
+    edited) and "may Houston record this" (a call site)."""
+    check_fix_state(raw)
+    if FixState(raw) not in WRITABLE_FIX:
         writable = ", ".join(s.value for s in WRITABLE_FIX)
         raise ValueError(
-            f"fix state {raw!r} is the reviewer's verdict on the PR, not something "
-            f"Houston observes -- code may write: {writable}"
+            f"fix state {str(raw)!r} is the reviewer's verdict on the PR, not "
+            f"something Houston observes -- code may write: {writable}"
         )

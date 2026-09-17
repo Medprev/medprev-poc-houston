@@ -6,10 +6,6 @@ from houston.frontmatter import Report, load_report
 from houston.report_state import blocks_phase
 from houston.report_store import DEFAULT_STORE, ReportStore
 
-# The rule lives in `report_state.blocks_phase`, which also answers for a
-# state this package cannot read (ADR-0035). `report_state.BLOCKING` is the
-# list itself, for the operator message `cli.py` prints.
-
 
 @dataclass
 class Metrics:

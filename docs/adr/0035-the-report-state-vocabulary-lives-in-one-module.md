@@ -58,9 +58,8 @@ the cheap side: a bad value on disk is a document a human has to find and fix by
 
 **Values stay `str` on `Report`.** `yaml.safe_dump` raises `RepresenterError` on a `StrEnum` member,
 and the rendered bytes of 153 committed reports are the product (ADR-0029). The enum is what code
-compares and decides with; `to_markdown` coerces with `str()`, so passing a member is safe rather
-than a crash at write time — a real trap, because a `StrEnum` satisfies every `str` annotation on the
-way there.
+compares and decides with, and the coercion happens once, in `_dump_front_matter` — see "One YAML
+writer" below for why per-field coercion was the wrong place, and what it cost.
 
 **The comment vocabularies become pointers.** `Report.state` and `Report.fix_state` carried two of
 the six lists as comments — the two ADR-0035 calls non-authoritative — so they now name the module
@@ -77,10 +76,14 @@ state, cost and count**. Both paths now render through `_dump_front_matter`, whi
 mapping. Found in review, before merge, by the question "does the coercion cover every write path" —
 the answer was no, and the tests passed because every one of them passed a literal.
 
-**Writing vocabulary is narrower than reading vocabulary.** `WRITABLE_FIX` is `{pr_open, incomplete}`:
-`check_fix_state` refuses `merged`/`rejected` from code. They stay in `FixState` because a human
-editing the file means something by them, but a `# human-owned, no writer` comment is a promise and
-the frozenset is the enforcement.
+**Writing vocabulary is narrower than reading vocabulary — and the narrowing belongs to exactly one
+site.** `WRITABLE_FIX` is `{pr_open, incomplete}`, and `check_writable_fix_state` enforces it in
+`record_fix_attempt`, the only place code records a fix state. `check_fix_state` answers the other
+question — "is this a fix state at all" — and is what `write_report` and the backfill's `preflight`
+ask, because those validate a *document*, which a human may have edited: `docs/pipeline.md` tells
+them to write `fix_state: merged` by hand. Applying the write rule there made the migration over all
+153 reports refuse a report because a human had followed the documentation — the mirror image of the
+`safe_dump` defect below, one rule applied at one site and not the other.
 
 **`attempted` is deleted rather than kept.** `merged` and `rejected` stay in `FixState`, marked in
 code as human-owned with no writer: that is the real workflow `docs/pipeline.md` draws, and naming
@@ -92,7 +95,7 @@ them is how the gap stays visible instead of looking like an oversight.
 
 - The vocabulary is in one place, and `DISPLAY_ORDER` is covered by a test that compares it against
   the enum — a state added later cannot silently disappear from the incident page.
-- 295 tests pass (281 before, +14). `reports/` is untouched, `tests/test_report_golden.py` and
+- 296 tests pass (281 before, +15). `reports/` is untouched, `tests/test_report_golden.py` and
   `tests/test_report_corpus.py` are unedited, and `mise run metrics` over the real 153-report corpus
   prints output byte-identical to the pre-change checkout, `diff`-verified. `ruff` clean.
 - The two central tests are verified by mutation, not by passing: making an unreadable state

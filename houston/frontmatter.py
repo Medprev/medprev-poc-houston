@@ -18,7 +18,12 @@ import yaml
 
 from houston.models import Finding
 from houston.pii_gate import scan
-from houston.report_state import ReportState, check_fix_state, check_state
+from houston.report_state import (
+    ReportState,
+    check_fix_state,
+    check_state,
+    check_writable_fix_state,
+)
 from houston.report_store import DEFAULT_STORE, ReportStore
 
 # A PII hit is not "nothing happened": the investigation ran and was paid
@@ -68,11 +73,14 @@ def _dump_front_matter(front_matter: dict) -> str:
 
 def _plain(value):
     """Enum members become their values, all the way down -- the nested
-    `window`/`observed`/`cost` blocks are dicts too."""
+    `window`/`observed`/`cost` blocks are dicts, and a future list-valued
+    field would otherwise reopen exactly the hole this closes."""
     if isinstance(value, Enum):
         return value.value
     if isinstance(value, dict):
         return {key: _plain(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_plain(item) for item in value]
     return value
 
 
@@ -427,7 +435,7 @@ def record_fix_attempt(
 
     Reads the document rather than taking one the caller already read: an
     agent run of minutes sits between `fix_report`'s read and this write."""
-    check_fix_state(state)
+    check_writable_fix_state(state)
     front_matter, body = split_document(path.read_text())
     recorded_pr = front_matter.get("fix_pr")
     # Built in the order `to_markdown` renders them, so a report that had no
