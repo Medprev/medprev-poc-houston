@@ -140,6 +140,44 @@ def test_successful_fix_extracts_pr_url(mock_count, mock_prep, mock_clean):
 @patch("houston.fix_agent._cleanup_worktree")
 @patch("houston.fix_agent._prepare_worktree")
 @patch("houston.fix_agent._count_existing_attempts", return_value=0)
+def test_a_failed_run_records_the_tier_it_was_asked_for(mock_count, mock_prep, mock_clean):
+    """ADR-0013 records what a failed run cost, and a failed run's envelope
+    carries no `modelUsage` -- so the requested tier is the only label left,
+    and it has to be the one the operator actually asked for."""
+    mock_prep.return_value = (Path("/tmp/wt"), "houston/fix/et-test")
+    runner = FakeRunner(ModelOutcome(returncode=1, stdout="not json", stderr="boom"))
+
+    result = fix("et-test", "report text", "https://github.com/org/repo/issues/1",
+                 REPO_INFO, model="opus", runner=runner)
+
+    assert result.state == "incomplete"
+    assert result.model == "opus"
+
+
+@patch("houston.fix_agent._cleanup_worktree")
+@patch("houston.fix_agent._prepare_worktree")
+@patch("houston.fix_agent._count_existing_attempts", return_value=0)
+def test_the_billed_model_comes_from_the_envelope_not_the_alias(mock_count, mock_prep, mock_clean):
+    """When the CLI does report what it billed, that wins over the alias --
+    the same rule agent.py follows, and the reason ADR-0023 exists."""
+    mock_prep.return_value = (Path("/tmp/wt"), "houston/fix/et-test")
+    payload = json.dumps({
+        "result": "PR: https://github.com/Medprev/medprev-web-app/pull/42",
+        "usage": {"input_tokens": 10, "output_tokens": 5},
+        "modelUsage": {"claude-sonnet-5-20260514": {"costUSD": 1.2}},
+        "duration_ms": 1000, "total_cost_usd": 1.2,
+    })
+    runner = FakeRunner(_outcome(payload))
+
+    result = fix("et-test", "report text", "https://github.com/org/repo/issues/1",
+                 REPO_INFO, model="sonnet", runner=runner)
+
+    assert result.model == "claude-sonnet-5-20260514"
+
+
+@patch("houston.fix_agent._cleanup_worktree")
+@patch("houston.fix_agent._prepare_worktree")
+@patch("houston.fix_agent._count_existing_attempts", return_value=0)
 def test_no_pr_url_means_incomplete(mock_count, mock_prep, mock_clean):
     mock_prep.return_value = (Path("/tmp/wt"), "houston/fix/et-test")
     payload = json.dumps({

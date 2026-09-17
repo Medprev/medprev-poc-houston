@@ -10,10 +10,15 @@ today -- these two do.
 
 Frozen inputs use round dollar amounts (0.32, not a float that doesn't
 round-trip) so the golden text is exactly reproducible.
+
+Two rendered shapes, two goldens: a report `write_report` rendered whole, and
+a report `record_fix_attempt` patched in place. The second is the shape
+ADR-0034 introduced, and patching is the only write that has to leave bytes
+it did not mean to touch exactly where they were.
 """
 from pathlib import Path
 
-from houston.frontmatter import Cost, Report, write_report
+from houston.frontmatter import Cost, Report, record_fix_attempt, write_report
 from houston.models import Finding
 
 GOLDEN_DIR = Path(__file__).parent / "golden"
@@ -68,3 +73,32 @@ def test_quarantined_report_leaves_a_redacted_record_and_a_full_quarantine_file(
     assert result.path.read_text() == (
         GOLDEN_DIR / "report_quarantine_full.md"
     ).read_text()
+
+
+def test_a_recorded_fix_attempt_patches_the_document_byte_for_byte(store):
+    """What the fix writer is allowed to change, frozen: it fills the four
+    fix keys and leaves the investigation's own front-matter, the injected
+    link line and the body untouched, in place."""
+    report = Report.from_finding(
+        _finding("et-golden-fix", regressed=False), state="promoted",
+        body="Causa raiz: timeout no client axios apos 5s.",
+    )
+    report.cost = Cost(
+        input_tokens=12000, output_tokens=800, duration_s=42.5, usd=0.32,
+        cache_read_input_tokens=9000, cache_creation_input_tokens=1200,
+        model="claude-sonnet-5",
+    )
+    report.issue = "https://github.com/Medprev/medprev-product-backlog/issues/1"
+    path = write_report(report).path
+
+    record_fix_attempt(
+        path, pr_url="https://github.com/Medprev/medprev-web-app/pull/1372",
+        state="pr_open",
+        cost=Cost(
+            input_tokens=90000, output_tokens=4200, duration_s=311.5, usd=1.75,
+            cache_read_input_tokens=80000, cache_creation_input_tokens=3000,
+            model="claude-sonnet-5",
+        ),
+    )
+
+    assert path.read_text() == (GOLDEN_DIR / "report_fix_patched.md").read_text()

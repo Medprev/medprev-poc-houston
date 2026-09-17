@@ -144,6 +144,7 @@ def test_from_markdown_recovers_every_field_to_markdown_rendered():
     report.issue = "https://github.com/Medprev/medprev-product-backlog/issues/1"
     report.fix_pr = "https://github.com/Medprev/medprev-web-app/pull/1372"
     report.fix_state = "pr_open"
+    report.fix_attempts = 2
     report.fix_cost = Cost(
         input_tokens=90000, output_tokens=4200, duration_s=311.5, usd=1.84,
         cache_read_input_tokens=80000, cache_creation_input_tokens=3000,
@@ -224,6 +225,7 @@ def test_a_failed_attempt_never_erases_the_pr_a_previous_one_opened(store):
         store,
         fix_pr="https://github.com/Medprev/medprev-web-app/pull/1372",
         fix_state="pr_open",
+        fix_attempts=1,
         fix_cost=Cost(usd=1.2, model="claude-sonnet-5"),
     )
 
@@ -235,6 +237,7 @@ def test_a_failed_attempt_never_erases_the_pr_a_previous_one_opened(store):
     assert parsed.fix_pr == "https://github.com/Medprev/medprev-web-app/pull/1372"
     assert parsed.fix_state == "pr_open"  # describes the finding, not the attempt
     assert parsed.fix_cost.usd == 1.6  # the failed retry still billed
+    assert parsed.fix_attempts == 2  # and is visible as a run, not just a delta
 
 
 def test_a_failed_first_attempt_is_recorded_as_incomplete(store):
@@ -275,3 +278,35 @@ def test_a_report_with_no_fix_run_renders_no_fix_cost_key(store):
 
     assert "fix_cost" not in text
     assert Report.from_markdown(text).fix_cost is None
+
+
+def test_a_retry_that_opens_a_second_pr_points_the_report_at_the_new_one(store):
+    """The other side of the rule, pinned because the field is a single
+    pointer: a retry that really opens a PR replaces the URL. The first PR
+    stays reachable from the issue it was opened against, not from the
+    report — which is a cost of the shape, not an accident of this writer."""
+    path = _promoted_on_disk(
+        store,
+        fix_pr="https://github.com/Medprev/medprev-web-app/pull/1372",
+        fix_state="pr_open",
+        fix_attempts=1,
+        fix_cost=Cost(usd=1.2, model="claude-sonnet-5"),
+    )
+
+    record_fix_attempt(
+        path, pr_url="https://github.com/Medprev/medprev-web-app/pull/1400",
+        state="pr_open", cost=Cost(usd=0.8, model="claude-sonnet-5"),
+    )
+
+    parsed = load_report(path)
+    assert parsed.fix_pr == "https://github.com/Medprev/medprev-web-app/pull/1400"
+    assert parsed.fix_attempts == 2
+    assert parsed.fix_cost.usd == 2.0
+
+
+def test_an_attempt_on_a_report_that_never_had_one_counts_as_the_first(store):
+    path = _promoted_on_disk(store)
+
+    record_fix_attempt(path, pr_url=None, state="incomplete", cost=Cost(usd=0.4))
+
+    assert load_report(path).fix_attempts == 1

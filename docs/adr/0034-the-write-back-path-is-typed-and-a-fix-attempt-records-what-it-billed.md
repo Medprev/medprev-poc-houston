@@ -52,7 +52,15 @@ package is now in `frontmatter.py`.
 URL". `fix_pr` is written when an attempt produced one and left alone otherwise; `fix_state` stays
 with it, because a recorded PR describes *the finding* while `incomplete` would describe *the
 attempt*. A first attempt that fails still writes `fix_state: incomplete` — the state only stands
-still when there is a PR to protect.
+still when there is a PR to protect. The pointer is singular, so a retry that *does* open a second PR
+replaces the URL; what is impossible is zeroing it.
+
+**`fix_attempts` counts the runs the total is made of.** Freezing `fix_state` behind an open PR is a
+deliberate deviation from #34's own prescription ("don't write `fix_pr` on the failure path, write
+only `fix_state`"), and it costs something: a retry that fails behind an open PR changes no state at
+all. The counter is what keeps it visible, and it is also what makes a double write of one run
+detectable — nothing on disk identifies a run, so `record_fix_attempt` must be called exactly once
+per agent run.
 
 **`fix_cost` is a second cost block, and it accumulates.** Every attempt bills whether or not it ends
 in a PR, so the second attempt adds to the first rather than replacing it. It is kept apart from
@@ -61,16 +69,23 @@ investigation, sonnet/`high` for the fix), and a dollar figure is uninterpretabl
 that produced it (ADR-0023) — so `FixResult` gains the `model` field `agent.py` already recorded,
 through the same `_billed_model` it already imports.
 
-**The key is rendered only when there is one.** `to_markdown` writes `fix_cost` only for a report a
-fix actually touched: 149 of the 153 committed reports have no fix run, and an unconditional block
-would move bytes in every one of them on the next re-render, for nothing. `_cost_block`/`_cost_from`
-render and parse both blocks, so the fix's cost cannot drift from the investigation's.
+**The key is rendered only when there is one, because presence is the signal.** `metrics.compute`
+reads `if r.fix_cost` as "a fix ran on this finding". An unconditional zeroed block would report a
+fix run on all 153 committed reports, 150 of which never had one — and would change the bytes
+`tests/golden/report_new.md` freezes. `_cost_block`/`_cost_from` render and parse both blocks, so the
+fix's cost cannot drift from the investigation's.
 
 **One mapping from an agent run to a `Cost`.** `billed(run)` reads the seven numbers both
 `InvestigationResult` and `FixResult` report under the same names, behind a `BilledRun` Protocol that
 states the shape. The investigation path used to copy those seven fields onto `report.cost` by
-assignment after construction — debt ADR-0033 recorded and left to the write-path work, which is this
-PR. A rename on either result class now fails a test instead of silently zeroing a cost field.
+assignment after construction. A rename on either result class now fails a test instead of silently
+zeroing a cost field. This settles the *duplication* ADR-0033 pointed at, not the debt that ADR
+prescribed: `Report.from_finding` still has no `cost` parameter, so the cost is still attached after
+construction and `frozen=True` is still not mechanical.
+
+**The patch is written beside the file and renamed over it.** `write_text` truncates before writing,
+and this path now runs on every fix attempt over a body that was already paid for and exists nowhere
+else.
 
 **`houston metrics` reports the two spends apart.** `usd_total` keeps meaning investigation spend;
 `fix_usd_total` and `with_fix_run` are new, `usd_grand_total` adds them. Folding the fix into
@@ -84,10 +99,13 @@ to answer.
 - #34 cannot recur: no caller can express the erasure. Pinned by
   `test_a_failed_attempt_never_erases_the_pr_a_previous_one_opened`, which also asserts the failed
   retry's spend was added.
-- 271 tests pass (263 before, +8). `tests/test_report_golden.py` and `tests/test_report_corpus.py`
-  are unedited — the ADR-0029 rule that proves the report bytes did not move — and `mise run metrics`
-  over the real 153-report corpus prints output byte-identical to the pre-change checkout,
-  `diff`-verified. `ruff` clean.
+- 277 tests pass (263 before, +14). `tests/test_report_corpus.py` is unedited and every existing
+  assertion in `tests/test_report_golden.py` is untouched — the ADR-0029 rule that proves the report
+  bytes did not move — and `mise run metrics` over the real 153-report corpus prints output
+  byte-identical to the pre-change checkout, `diff`-verified. `ruff` clean.
+- The second rendered shape gets its own golden. `tests/golden/report_fix_patched.md` freezes what a
+  patched document looks like: the four fix keys filled in the order `to_markdown` renders them, and
+  the investigation's front-matter, the injected link line and the body exactly where they were.
 - The round-trip test from ADR-0033 caught `fix_cost` the moment it was added and refused to pass
   until the field was exercised on both sides. That is the invariant working as designed.
 - `houston fix`'s cost is now measurable per finding, which is what lets the PoC state a fix's price
@@ -97,23 +115,35 @@ to answer.
 
 ### Bad
 
+- **`fix_pr` is a single pointer.** A retry that opens a second PR replaces the first URL, which then
+  survives only on the issue the fix commented on — not on the report that caused it. Pinned by
+  `test_a_retry_that_opens_a_second_pr_points_the_report_at_the_new_one`, so it is a decision rather
+  than a discovery. A history (`fix_prs: []`) belongs with C3's state machine.
+- **Nothing refuses a second $3.00 run on a finding that already has an open PR.** `fix_report` only
+  checks `state == "promoted"`, and `_count_existing_attempts` plus the `-v2` branch suffix exist
+  because a retry is expected. On a PoC whose reason to exist is establishing cost per finding, that
+  is a real hole — pre-existing, and now measurable per finding through `fix_attempts`, which is what
+  a refusal would read.
 - **The three fix runs already on disk are unrecoverable.** Their spend was never written anywhere,
   so `fix_usd_total` starts at `0.0` against three PRs that were really paid for. Only future runs
   are counted.
 - **A mixed-tier retry sums into one number.** `fix_cost` accumulates across attempts while `model`
   keeps the latest attempt's. Retrying with `--model opus` after a sonnet attempt produces a total
   whose model label is true only of the last run — the same caveat ADR-0023 raised, now for the fix
-  path. Acceptable while the tier is pinned in code; a per-attempt list is not worth its cost at
-  three fix runs total.
+  path. The same applies to every number in the block: `duration_s` is the sum of the attempts'
+  wall-clock, while the investigation's `cost.duration_s` is one run's. `fix_attempts` is the
+  denominator that keeps those totals readable; a per-attempt list is not worth its cost at three fix
+  runs total.
 - **`fix_cost` is the first key whose presence depends on data.** Two reports written by the same
   code can now differ in shape. The alternative moved bytes in 149 files.
 - **`fix_state`'s vocabulary still has no owner.** `Report`'s docstring lists
   `attempted | pr_open | merged | rejected | incomplete`; only `pr_open` and `incomplete` are ever
   written, and nothing records that a human merged or rejected the PR. Unchanged here, and now
   visible: that is C3's job in #37.
-- **Still outside the store.** Both writers take a bare `Path`, so `ReportStore._filename`'s
-  path-safety check does not apply to this door. Every caller passes `store.path(fingerprint)`,
-  which does check — the type does not enforce it.
+- **The gating half of the debt is re-deferred.** ADR-0033's follow-up allocated "typing and gating"
+  of this door to this PR. Only the typing shipped: both writers still take a bare `Path`, so
+  `ReportStore._filename`'s path-safety check does not apply to them. Every caller passes
+  `store.path(fingerprint)`, which does check — the type does not enforce it, and C7 now owns it.
 
 ### Follow-up
 

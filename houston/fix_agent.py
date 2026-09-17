@@ -161,7 +161,14 @@ def _result(
     branch: str | None = None,
     error: str | None = None,
     fallback_duration_s: float = 0.0,
-    requested_model: str = DEFAULT_MODEL,
+    *,
+    # No default on purpose. On the timeout, non-JSON and error paths the
+    # envelope carries no `modelUsage`, so `_billed_model` falls back to
+    # exactly this value -- and ADR-0013 requires recording what a failed
+    # run cost. A call site that forgot the argument would label an `opus`
+    # run as the default tier in the one case where the label is the only
+    # thing left.
+    requested_model: str,
 ) -> FixResult:
     usage = (payload or {}).get("usage") or {}
     total_input, cache_read, cache_creation = _input_tokens(usage)
