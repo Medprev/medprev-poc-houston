@@ -3,10 +3,10 @@
 Nothing in the existing suite asserts the exact bytes `write_report` puts on
 disk -- front-matter key order, the injected `**Link do Datadog:**` line and
 its blank-line framing, the trailing newline. Those bytes are the product:
-166 tracked `reports/*.md` files are read by `read_report`'s `text.split("---",
-2)`, by `cmd_promote`'s manual re-split, and (once it lands) by the fix
-front-matter rewrite. A silent change to `Report.to_markdown()`'s framing
-would not fail a single test today -- these three do.
+153 tracked `reports/*.md` files are parsed back by `Report.from_markdown`
+and patched in place by the promote and fix front-matter rewrites. A silent
+change to `Report.to_markdown()`'s framing would not fail a single test
+today -- these two do.
 
 Frozen inputs use round dollar amounts (0.32, not a float that doesn't
 round-trip) so the golden text is exactly reproducible.

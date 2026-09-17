@@ -7,7 +7,7 @@ from subprocess import CompletedProcess
 from unittest.mock import patch
 
 from houston.cli import cmd_promote
-from houston.frontmatter import Report, read_report, write_report
+from houston.frontmatter import Report, load_report, write_report
 from houston.models import Finding
 from houston.pipeline import extract_issue_body
 
@@ -85,7 +85,7 @@ def test_promote_without_create_prints_the_command_and_runs_nothing(
     assert "--label AIOPS" in out
     assert "**O quê**: a rota quebra." in out
     assert "--create" in out
-    assert read_report(path)["state"] == "new"
+    assert load_report(path).state == "new"
 
 
 def test_promote_sends_only_the_issue_body_under_the_portuguese_heading(
@@ -178,9 +178,9 @@ def test_promote_create_files_the_issue_and_records_it_in_the_report(
     assert body.startswith("**O quê**: a rota quebra.")
     assert "## Causa raiz" not in body
 
-    front = read_report(path)
-    assert front["issue"] == _ISSUE_URL
-    assert front["state"] == "promoted"
+    front = load_report(path)
+    assert front.issue == _ISSUE_URL
+    assert front.state == "promoted"
     assert _ISSUE_URL in capsys.readouterr().out
 
 
@@ -197,7 +197,7 @@ def test_promote_create_keeps_the_body_out_of_a_shell(store):
     body = create_call[create_call.index("--body") + 1]
     assert "n'ao" in body
     assert "'\\''" not in body
-    assert read_report(path)["state"] == "promoted"
+    assert load_report(path).state == "promoted"
 
 
 def test_promote_create_refuses_the_personal_github_account(
@@ -213,7 +213,7 @@ def test_promote_create_refuses_the_personal_github_account(
 
     assert exit_code == 1
     assert not any(c[:3] == ["gh", "issue", "create"] for c in calls)
-    assert read_report(path)["state"] == "new"
+    assert load_report(path).state == "new"
     assert "carlacurymed" in capsys.readouterr().err
 
 
@@ -246,7 +246,7 @@ def test_promote_create_refuses_an_unexpanded_placeholder(store, capsys):
 
     assert exit_code == 1
     assert not any(c[:3] == ["gh", "issue", "create"] for c in calls)
-    assert read_report(path)["state"] == "new"
+    assert load_report(path).state == "new"
     err = capsys.readouterr().err
     assert "window_from" in err and "window_to" in err
 
@@ -278,7 +278,7 @@ def test_promote_create_leaves_the_report_untouched_when_gh_fails(
         exit_code = cmd_promote(_args("et-ghfail", create=True))
 
     assert exit_code == 1
-    front = read_report(path)
-    assert front["state"] == "new"
-    assert front["issue"] is None
+    front = load_report(path)
+    assert front.state == "new"
+    assert front.issue is None
     assert "HTTP 404" in capsys.readouterr().err

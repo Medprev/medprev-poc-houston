@@ -27,7 +27,7 @@ from houston.frontmatter import (
     QUARANTINED_STATE,
     Report,
     WriteResult,
-    read_report,
+    split_document,
     write_report,
 )
 from houston.model_runner import ModelRunner
@@ -103,21 +103,21 @@ def extract_issue_body(body: str) -> str:
     return _unfence(section.strip())
 
 
-def issue_title(report: dict) -> str:
+def issue_title(report: Report) -> str:
     """Names the error, in the shape the backlog reads.
 
     `reason` is the diagnostic label (error_type / monitor name / k8s
     Reason); novelty is a separate field, so the title names the error
     instead of naming how new it is."""
-    novelty = "regression: " if report.get("novelty") == "regression" else ""
+    novelty = "regression: " if report.novelty == "regression" else ""
     return (
-        f"[{report['source']}] {novelty}{report['reason']} "
-        f"in {report.get('service') or 'unknown service'}"
+        f"[{report.source}] {novelty}{report.reason} "
+        f"in {report.service or 'unknown service'}"
     )
 
 
 def promotion_blockers(
-    report: dict, issue_body: str, account: str | None, *, required_account: str,
+    report: Report, issue_body: str, account: str | None, *, required_account: str,
 ) -> list[str]:
     """Everything that must be true before an issue reaches the shared
     backlog. Each one fails closed: filing is outward-facing, and undoing
@@ -128,9 +128,9 @@ def promotion_blockers(
             f"active gh account is {account or 'unreadable'}, not {required_account} "
             f"-- run: gh auth switch --user {required_account}"
         )
-    if report.get("issue"):
-        blockers.append(f"report already carries issue: {report['issue']}")
-    if report.get("state") == QUARANTINED_STATE:
+    if report.issue:
+        blockers.append(f"report already carries issue: {report.issue}")
+    if report.state == QUARANTINED_STATE:
         blockers.append(
             "report is quarantined -- its body is the redaction record, "
             "not an investigation (ADR-0015)"
@@ -148,10 +148,13 @@ def update_front_matter(path: Path, **fields) -> None:
     chose -- never model text, so this does not re-run the PII gate over
     a body that already passed it at write time (ADR-0030's "Bad" section
     records this as a deliberate, still-open exception to
-    `write_report()` being the only gated path)."""
-    text = path.read_text()
-    _, front_raw, body = text.split("---", 2)
-    fm = yaml.safe_load(front_raw)
+    `write_report()` being the only gated path).
+
+    Patches the document rather than re-rendering the `Report`: every one of
+    the 153 committed reports gains keys on a re-render (none carries
+    ADR-0023's `cost.model`, 16 predate ADR-0019's `novelty`), so a rewrite
+    here would edit reports it was only meant to annotate."""
+    fm, body = split_document(path.read_text())
     fm.update(fields)
     yaml_block = yaml.safe_dump(fm, sort_keys=False, allow_unicode=True)
     path.write_text(f"---\n{yaml_block}---{body}")
@@ -323,7 +326,7 @@ class PromoteCommand:
     path: Path
     title: str
     issue_body: str
-    report: dict
+    report: Report
 
 
 def build_promote_command(
@@ -334,11 +337,18 @@ def build_promote_command(
     path = store.path(fingerprint)
     if not path.exists():
         raise PipelineError(f"no report at {path}")
-    _, front_matter_raw, body = path.read_text().split("---", 2)
-    report = yaml.safe_load(front_matter_raw)
+    text = path.read_text()
+    report = Report.from_markdown(text)
+    # The issue body is filed verbatim into a shared backlog, so it comes
+    # from the *document* view, not from `report.body`. 143 of the 153
+    # committed reports carry no `## Corpo da issue` heading and hit
+    # `extract_issue_body`'s whole-body fallback -- exactly where the
+    # injected `**Link do Datadog:**` line lives, and that link is the
+    # reader's way to the real evidence (ADR-0011).
+    _, document_body = split_document(text)
     return PromoteCommand(
-        path=path, title=issue_title(report), issue_body=extract_issue_body(body),
-        report=report,
+        path=path, title=issue_title(report),
+        issue_body=extract_issue_body(document_body), report=report,
     )
 
 
@@ -413,18 +423,18 @@ def fix_report(
     if not path.exists():
         raise PipelineError(f"no report at {path}")
 
-    report = read_report(path)
-    if report.get("state") != "promoted":
-        raise PipelineError(f"report state is '{report.get('state')}', not 'promoted'")
+    text = path.read_text()
+    report = Report.from_markdown(text)
+    if report.state != "promoted":
+        raise PipelineError(f"report state is '{report.state}', not 'promoted'")
 
-    issue_url = issue or report.get("issue")
+    issue_url = issue or report.issue
     if not issue_url:
         raise PipelineError(
             "no issue URL: pass --issue <url> or set the issue: field in the report"
         )
 
-    text = path.read_text()
-    service = report.get("service")
+    service = report.service
     repo_info = resolve_repo_fn(service, text)
     if repo_info is None:
         raise PipelineError(f"service '{service}' does not map to a fixable repo")

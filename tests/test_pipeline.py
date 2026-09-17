@@ -15,7 +15,7 @@ import pytest
 
 from houston.agent import InvestigationResult
 from houston.fix_agent import FixResult
-from houston.frontmatter import Report, read_report, write_report
+from houston.frontmatter import Report, load_report, write_report
 from houston.models import Finding
 from houston.pipeline import (
     PipelineError,
@@ -59,7 +59,7 @@ def test_seed_writes_state_seeded_for_every_new_finding(store):
     assert outcome.quarantined == []
     # ADR-0010: seeded has to be distinguishable from investigated, or the
     # finding never re-enters the queue and its $0 cost pollutes metrics.
-    assert read_report(store / "et-cli-test.md")["state"] == "seeded"
+    assert load_report(store / "et-cli-test.md").state == "seeded"
 
 
 def test_seed_skips_a_finding_that_already_has_a_report(store):
@@ -107,10 +107,10 @@ def test_successful_investigation_writes_state_new(store):
     assert run.total_usd == 0.05
     # `usd` without the model that produced it is what made ADR-0023 a
     # forensic exercise, so the report has to carry both.
-    parsed = read_report(outcome.write.path)
-    assert parsed["state"] == "new"
-    assert parsed["cost"]["usd"] == 0.05
-    assert parsed["cost"]["model"] == "claude-sonnet-5"
+    parsed = load_report(outcome.write.path)
+    assert parsed.state == "new"
+    assert parsed.cost.usd == 0.05
+    assert parsed.cost.model == "claude-sonnet-5"
 
 
 def test_timed_out_investigation_writes_incomplete_not_fabricated(store):
@@ -213,21 +213,40 @@ def test_build_promote_command_raises_for_a_missing_report(store):
         raise AssertionError("expected PipelineError")
 
 
+def _report(**overrides) -> Report:
+    """A parsed report, the shape `build_promote_command` hands the guards.
+    Built through the parser rather than the constructor so the guards are
+    exercised against the same value a real report file produces."""
+    front = "\n".join(f"{k}: {v}" for k, v in {"state": "new", **overrides}.items())
+    return Report.from_markdown(f"---\n{front}\n---\n\nbody\n")
+
+
 def test_promotion_blockers_flags_wrong_account():
-    blockers = promotion_blockers({}, "", "carlacazv", required_account="carlacurymed")
+    blockers = promotion_blockers(
+        _report(), "", "carlacazv", required_account="carlacurymed",
+    )
     assert any("carlacurymed" in b for b in blockers)
 
 
 def test_promotion_blockers_flags_quarantined_state():
     blockers = promotion_blockers(
-        {"state": "quarantined"}, "", "carlacurymed", required_account="carlacurymed",
+        _report(state="quarantined"), "", "carlacurymed",
+        required_account="carlacurymed",
     )
     assert any("quarantined" in b for b in blockers)
 
 
+def test_promotion_blockers_flags_a_report_that_already_carries_an_issue():
+    blockers = promotion_blockers(
+        _report(issue="https://github.com/Medprev/medprev-product-backlog/issues/1"),
+        "", "carlacurymed", required_account="carlacurymed",
+    )
+    assert any("already carries issue" in b for b in blockers)
+
+
 def test_promotion_blockers_flags_unexpanded_markers():
     blockers = promotion_blockers(
-        {}, "quebra entre window_from e window_to", "carlacurymed",
+        _report(), "quebra entre window_from e window_to", "carlacurymed",
         required_account="carlacurymed",
     )
     assert any("unexpanded" in b for b in blockers)
@@ -235,7 +254,7 @@ def test_promotion_blockers_flags_unexpanded_markers():
 
 def test_promotion_blockers_none_when_everything_is_clean():
     blockers = promotion_blockers(
-        {}, "clean body", "carlacurymed", required_account="carlacurymed",
+        _report(), "clean body", "carlacurymed", required_account="carlacurymed",
     )
     assert blockers == []
 
@@ -252,9 +271,9 @@ def test_promote_report_files_the_issue_and_records_it(store):
     )
 
     assert url == "https://github.com/org/repo/issues/9"
-    parsed = read_report(store / "et-promote.md")
-    assert parsed["issue"] == url
-    assert parsed["state"] == "promoted"
+    parsed = load_report(store / "et-promote.md")
+    assert parsed.issue == url
+    assert parsed.state == "promoted"
 
 
 def test_promote_report_raises_without_filing_when_blocked(store):
@@ -357,9 +376,9 @@ def test_fix_report_records_the_pr_and_notifies_the_issue(store):
         ("https://github.com/org/repo/issues/1",
          "PR aberto pelo Houston fix agent: https://github.com/org/repo/pull/1"),
     ]
-    parsed = read_report(store / "et-fix-ok.md")
-    assert parsed["fix_pr"] == "https://github.com/org/repo/pull/1"
-    assert parsed["fix_state"] == "pr_open"
+    parsed = load_report(store / "et-fix-ok.md")
+    assert parsed.fix_pr == "https://github.com/org/repo/pull/1"
+    assert parsed.fix_state == "pr_open"
 
 
 # ---------------------------------------------------------------------------
@@ -577,6 +596,24 @@ def test_the_pr_url_is_recorded_before_gh_is_told_about_it(store):
             effort="high", notify_fn=notify_fn,
         )
 
-    parsed = read_report(store / "et-fix-notify-fails.md")
-    assert parsed["fix_pr"] == "https://github.com/org/repo/pull/7"
-    assert parsed["fix_state"] == "pr_open"
+    parsed = load_report(store / "et-fix-notify-fails.md")
+    assert parsed.fix_pr == "https://github.com/org/repo/pull/7"
+    assert parsed.fix_state == "pr_open"
+
+
+def test_the_filed_issue_body_keeps_the_datadog_link(store):
+    """143 of the 153 committed reports carry no `## Corpo da issue` heading,
+    so `extract_issue_body` falls back to the whole body -- which is exactly
+    where the injected `**Link do Datadog:**` line lives. Building the command
+    from `report.body` (link-stripped) silently dropped the reader's only way
+    to the evidence from every issue filed off those reports (ADR-0011)."""
+    finding = _finding(
+        "et-no-heading",
+        datadog_url="https://app.datadoghq.com/error-tracking/issue/no-heading",
+    )
+    write_report(Report.from_finding(finding, body="Seeded, not investigated."))
+
+    command = build_promote_command("et-no-heading")
+
+    assert command.issue_body.startswith("**Link do Datadog:**")
+    assert "Seeded, not investigated." in command.issue_body

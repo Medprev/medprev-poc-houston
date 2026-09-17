@@ -17,6 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from houston.frontmatter import Report
 from houston.metrics import compute, load_all_reports
 
 # Named "site/", not "docs/" — this repo's docs/ already holds ADRs and the
@@ -32,28 +33,29 @@ def _fmt_ms(ms: int | None) -> str:
     return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
 
 
-def _row(r: dict) -> str:
-    fp = html.escape(r["fingerprint"])
+def _row(r: Report) -> str:
+    fp = html.escape(r.fingerprint)
     short_fp = fp[:18] + "…" if len(fp) > 19 else fp
-    service = html.escape(r.get("service") or "—")
-    issue = r.get("issue")
-    issue_html = f'<a href="{html.escape(issue)}">{html.escape(issue)}</a>' if issue else "—"
+    service = html.escape(r.service or "—")
+    issue_html = (
+        f'<a href="{html.escape(r.issue)}">{html.escape(r.issue)}</a>' if r.issue else "—"
+    )
     return (
         "<tr>"
         f'<td class="mono">{short_fp}</td>'
         f"<td>{service}</td>"
-        f'<td>{html.escape(r["source"])}</td>'
-        f'<td>{html.escape(r["reason"])}</td>'
-        f'<td>{html.escape(r.get("novelty") or "—")}</td>'
-        f'<td><span class="sev sev-{html.escape(r["severity"])}">{html.escape(r["severity"])}</span></td>'
-        f'<td><span class="state state-{html.escape(r["state"])}">{html.escape(r["state"])}</span></td>'
-        f'<td>{_fmt_ms(r["observed"]["first_seen"])}</td>'
+        f"<td>{html.escape(r.source)}</td>"
+        f"<td>{html.escape(r.reason)}</td>"
+        f'<td>{html.escape(r.novelty or "—")}</td>'
+        f'<td><span class="sev sev-{html.escape(r.severity)}">{html.escape(r.severity)}</span></td>'
+        f'<td><span class="state state-{html.escape(r.state)}">{html.escape(r.state)}</span></td>'
+        f"<td>{_fmt_ms(r.first_seen_ms)}</td>"
         f"<td>{issue_html}</td>"
         "</tr>"
     )
 
 
-def render(reports: list[dict]) -> str:
+def render(reports: list[Report]) -> str:
     m = compute(reports)
     fp_rate = f"{m.false_positive_rate:.1%}" if m.false_positive_rate is not None else "n/a"
     state_counts = "".join(
@@ -62,7 +64,7 @@ def render(reports: list[dict]) -> str:
         for s in _STATE_ORDER if s in m.by_state
     )
     rows = "\n".join(_row(r) for r in sorted(
-        reports, key=lambda r: r["observed"]["first_seen"] or 0, reverse=True
+        reports, key=lambda r: r.first_seen_ms or 0, reverse=True
     ))
     generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 

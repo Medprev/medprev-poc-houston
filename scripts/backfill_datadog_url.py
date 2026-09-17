@@ -14,6 +14,7 @@ neither is recomputed here.
 Usage: python scripts/backfill_datadog_url.py
 """
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -22,46 +23,30 @@ sys.path.insert(0, str(ROOT))
 from houston.collector import collect
 from houston.config import Config
 from houston.datadog_client import Window, event_explorer_url
-from houston.frontmatter import Cost, Report, read_report, write_report
+from houston.frontmatter import Report, load_report, write_report
 from houston.models import Finding
 from houston.report_store import DEFAULT_STORE
 
 _LEGACY_NOVELTY = {"new", "regression"}
 
 
-def _strip_link_line(body: str) -> str:
-    """`to_markdown` injects the link line itself; keeping the previous one
-    in the body is what duplicated it on every re-run."""
-    kept = [
-        line for line in body.strip().splitlines()
-        if not line.startswith("**Link do Datadog:**")
-    ]
-    return "\n".join(kept).strip()
-
-
-def _recorded_window(existing: dict) -> Window | None:
-    window = existing.get("window") or {}
-    if window.get("from") and window.get("to"):
-        return Window(from_ms=int(window["from"]), to_ms=int(window["to"]))
-    return None
-
-
-def _deep_link(finding: Finding, window: Window | None, site: str) -> str | None:
+def _deep_link(finding: Finding, report: Report, site: str) -> str | None:
     """The Kubernetes link is window-scoped, so it is rebuilt against the
     window the report's own numbers were measured in — not the window this
     migration happens to run in."""
-    if finding.source == "kubernetes" and window is not None:
+    if finding.source == "kubernetes" and report.window_from_ms and report.window_to_ms:
+        window = Window(from_ms=report.window_from_ms, to_ms=report.window_to_ms)
         return event_explorer_url(site, finding.query, window)
     return finding.datadog_url
 
 
-def _repaired_labels(existing: dict, finding: Finding) -> tuple[str, str]:
+def _repaired_labels(existing: Report, finding: Finding) -> tuple[str, str]:
     """Legacy reports stored "new"/"regression" in `reason`, overwriting the
     diagnostic label the collector had produced. Where the finding is still
     live, its real label is restored and the novelty moves to its own field."""
-    legacy_reason = existing.get("reason")
-    novelty = existing.get("novelty")
-    if novelty is None:
+    legacy_reason = existing.reason
+    novelty = existing.novelty
+    if not novelty:
         novelty = legacy_reason if legacy_reason in _LEGACY_NOVELTY else (
             "regression" if finding.regressed else "new"
         )
@@ -69,6 +54,34 @@ def _repaired_labels(existing: dict, finding: Finding) -> tuple[str, str]:
     if reason in _LEGACY_NOVELTY or not reason:
         reason = finding.reason
     return reason, novelty
+
+
+def refreshed(existing: Report, finding: Finding, site: str) -> Report:
+    """One report, three derived fields refreshed.
+
+    Everything measured -- state, body, cost, issue, observed counts,
+    severity, the window, and the fix_pr/fix_state a `houston fix` run
+    recorded -- is carried by `replace` rather than re-listed, which is what
+    stops a field added to `Report` later from being silently dropped here
+    (#35).
+
+    The old code indexed the front-matter dict directly, so a malformed
+    report raised KeyError and stopped the migration. `from_markdown` is
+    tolerant, so that loudness has to be asked for: this rewrites 153 files
+    in one pass, and writing an empty state back over all of them is not a
+    failure mode worth discovering afterwards."""
+    if not existing.state or not existing.fingerprint:
+        raise ValueError(
+            "refusing to rewrite a report with no state/fingerprint: "
+            f"{existing.fingerprint or '<unnamed>'}"
+        )
+    reason, novelty = _repaired_labels(existing, finding)
+    return replace(
+        existing,
+        reason=reason,
+        novelty=novelty,
+        datadog_url=_deep_link(finding, existing, site),
+    )
 
 
 def main() -> None:
@@ -82,32 +95,7 @@ def main() -> None:
             skipped_no_finding += 1
             continue  # finding aged out of the current 96h window -- can't refresh its link
 
-        existing = read_report(path)
-        _, _, body = path.read_text().split("---", 2)
-        window = _recorded_window(existing)
-        reason, novelty = _repaired_labels(existing, finding)
-        observed = existing.get("observed") or {}
-
-        report = Report(
-            fingerprint=existing["fingerprint"],
-            source=existing["source"],
-            reason=reason,
-            novelty=novelty,
-            service=existing.get("service"),
-            environment=existing.get("environment", "production"),
-            window_from_ms=window.from_ms if window else 0,
-            window_to_ms=window.to_ms if window else 0,
-            observed_count=observed.get("count", 0),
-            first_seen_ms=observed.get("first_seen"),
-            last_seen_ms=observed.get("last_seen"),
-            severity=existing["severity"],
-            state=existing["state"],
-            body=_strip_link_line(body),
-            cost=Cost(**(existing.get("cost") or {})),
-            issue=existing.get("issue"),
-            datadog_url=_deep_link(finding, window, site),
-        )
-        result = write_report(report)
+        result = write_report(refreshed(load_report(path), finding, site))
         assert result.written, f"unexpected quarantine on backfill: {path.stem}"
         updated += 1
 

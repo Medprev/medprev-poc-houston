@@ -2,7 +2,7 @@
 is typed by hand, same pattern as medprev-qa-agent."""
 from dataclasses import dataclass, field
 
-from houston.frontmatter import read_report
+from houston.frontmatter import Report, load_report
 from houston.report_store import DEFAULT_STORE, ReportStore
 
 # A report in one of these is work the phase still owes: `new` needs a human
@@ -42,35 +42,28 @@ def _percentile(values: list[float], pct: float) -> float:
     return ordered[idx]
 
 
-def load_all_reports(store: ReportStore = DEFAULT_STORE) -> list[dict]:
-    return [read_report(p) for p in store.iter_paths()]
+def load_all_reports(store: ReportStore = DEFAULT_STORE) -> list[Report]:
+    return [load_report(p) for p in store.iter_paths()]
 
 
-def _cost(report: dict) -> dict:
-    return report.get("cost") or {}
-
-
-def compute(reports: list[dict]) -> Metrics:
+def compute(reports: list[Report]) -> Metrics:
     by_state: dict[str, int] = {}
     usd_by_state: dict[str, float] = {}
     for r in reports:
-        by_state[r["state"]] = by_state.get(r["state"], 0) + 1
-        spent = float(_cost(r).get("usd") or 0.0)
-        if spent:
-            usd_by_state[r["state"]] = usd_by_state.get(r["state"], 0.0) + spent
+        by_state[r.state] = by_state.get(r.state, 0) + 1
+        if r.cost.usd:
+            usd_by_state[r.state] = usd_by_state.get(r.state, 0.0) + r.cost.usd
 
     promoted = by_state.get("promoted", 0)
     discarded = by_state.get("discarded", 0)
     decided = promoted + discarded
     fp_rate = (discarded / decided) if decided > 0 else None
 
-    input_tokens = [_cost(r).get("input_tokens") for r in reports]
-    input_tokens = [float(v) for v in input_tokens if v]
-    durations = [_cost(r).get("duration_s") for r in reports]
-    durations = [float(v) for v in durations if v]
+    input_tokens = [float(r.cost.input_tokens) for r in reports if r.cost.input_tokens]
+    durations = [float(r.cost.duration_s) for r in reports if r.cost.duration_s]
     # Spend is the number this PoC exists to establish (ADR-0001), so it is
     # aggregated here rather than added up by hand from the report files.
-    spends = [float(_cost(r).get("usd") or 0.0) for r in reports]
+    spends = [r.cost.usd for r in reports]
     paid = [v for v in spends if v]
 
     return Metrics(
@@ -90,16 +83,16 @@ def compute(reports: list[dict]) -> Metrics:
         usd_mean=(sum(paid) / len(paid)) if paid else 0.0,
         usd_p50=_percentile(paid, 0.50),
         usd_p95=_percentile(paid, 0.95),
-        with_issue_link=sum(1 for r in reports if r.get("issue")),
+        with_issue_link=sum(1 for r in reports if r.issue),
         usd_by_state=usd_by_state,
     )
 
 
-def can_close_phase(reports: list[dict]) -> tuple[bool, int]:
+def can_close_phase(reports: list[Report]) -> tuple[bool, int]:
     """Refuses while any report still owes work: `new` (undecided),
     `incomplete` (the investigation failed) or `quarantined` (the text is
     outside git, unread). Counting only `new` let a phase close on a run
     where every single investigation had timed out — the pending count it
     returns is the blocker."""
-    pending = sum(1 for r in reports if r["state"] in BLOCKING_STATES)
+    pending = sum(1 for r in reports if r.state in BLOCKING_STATES)
     return pending == 0, pending
