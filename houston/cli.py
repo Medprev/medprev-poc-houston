@@ -20,7 +20,7 @@ from houston.fix_agent import DEFAULT_EFFORT as FIX_DEFAULT_EFFORT
 from houston.fix_agent import DEFAULT_MODEL as FIX_DEFAULT_MODEL
 from houston.fix_agent import fix as agent_fix
 from houston.fix_agent import resolve_repo
-from houston.metrics import BLOCKING_STATES, can_close_phase, compute, load_all_reports
+from houston.metrics import can_close_phase, compute, load_all_reports
 from houston.model_runner import DEFAULT_RUNNER
 from houston.pipeline import (
     PipelineError,
@@ -32,6 +32,7 @@ from houston.pipeline import (
     promote_report,
     seed,
 )
+from houston.report_state import BLOCKING
 
 ISSUE_REPO = "Medprev/medprev-product-backlog"
 ISSUE_LABEL = "AIOPS"
@@ -87,11 +88,11 @@ def cmd_metrics(args: argparse.Namespace) -> int:
     if not can_close:
         breakdown = ", ".join(
             f"{m.by_state[state]} {state}"
-            for state in BLOCKING_STATES if m.by_state.get(state)
+            for state in BLOCKING if m.by_state.get(state)
         )
         print(f"\nphase CANNOT close: {pending} report(s) still owe work ({breakdown})")
         return 1
-    print(f"\nphase can close: no report left in {'/'.join(BLOCKING_STATES)}")
+    print(f"\nphase can close: no report left in {'/'.join(BLOCKING)}")
     return 0
 
 

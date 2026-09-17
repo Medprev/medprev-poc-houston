@@ -17,7 +17,7 @@ import yaml
 
 from houston.models import Finding
 from houston.pii_gate import scan
-from houston.report_state import ReportState, validated, validated_fix
+from houston.report_state import ReportState, check_fix_state, check_state
 from houston.report_store import DEFAULT_STORE, ReportStore
 
 # A PII hit is not "nothing happened": the investigation ran and was paid
@@ -260,7 +260,7 @@ def write_report(report: Report, store: ReportStore = DEFAULT_STORE) -> WriteRes
     Refuses a state outside the vocabulary before rendering anything: a
     typo used to reach disk, parse back as itself, and become its own row
     in `houston metrics`'s by-state table."""
-    validated(report.state)
+    check_state(report.state)
     markdown = report.to_markdown()
     hits = scan(markdown)
     if hits:
@@ -401,7 +401,7 @@ def record_fix_attempt(
 
     Reads the document rather than taking one the caller already read: an
     agent run of minutes sits between `fix_report`'s read and this write."""
-    validated_fix(state)
+    check_fix_state(state)
     front_matter, body = split_document(path.read_text())
     recorded_pr = front_matter.get("fix_pr")
     # Built in the order `to_markdown` renders them, so a report that had no

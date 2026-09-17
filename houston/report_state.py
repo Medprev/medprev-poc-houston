@@ -95,8 +95,8 @@ def blocks_phase(raw: str | None) -> bool:
     return state is None or state in BLOCKING
 
 
-def validated(raw: str) -> str:
-    """The state a writer is about to put on disk, or a refusal.
+def check_state(raw: str) -> None:
+    """Refuses a state a writer is about to put on disk.
 
     Fail closed on the way in, not on the way out: nothing validated this
     before, so a typo reached `reports/`, parsed back as itself, and became
@@ -104,10 +104,9 @@ def validated(raw: str) -> str:
     if parse(raw) is None:
         known = ", ".join(s.value for s in ReportState)
         raise ValueError(f"unknown report state {raw!r} -- known states are: {known}")
-    return str(raw)
 
 
-def validated_fix(raw: str) -> str:
+def check_fix_state(raw: str) -> None:
     """Same, for the fix lifecycle."""
     try:
         FixState(raw)
@@ -116,4 +115,3 @@ def validated_fix(raw: str) -> str:
         raise ValueError(
             f"unknown fix state {raw!r} -- known states are: {known}"
         ) from None
-    return str(raw)

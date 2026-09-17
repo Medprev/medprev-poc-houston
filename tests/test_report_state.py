@@ -7,7 +7,13 @@ question, and one of the two used to be silently wrong.
 """
 import pytest
 
-from houston.frontmatter import Cost, Report, load_report, record_fix_attempt, write_report
+from houston.frontmatter import (
+    Cost,
+    Report,
+    load_report,
+    record_fix_attempt,
+    write_report,
+)
 from houston.metrics import can_close_phase
 from houston.models import Finding
 from houston.report_state import (
@@ -15,10 +21,10 @@ from houston.report_state import (
     FixState,
     ReportState,
     blocks_phase,
+    check_fix_state,
+    check_state,
     needs_investigation,
     parse,
-    validated,
-    validated_fix,
 )
 
 
@@ -87,7 +93,7 @@ def test_a_state_outside_the_vocabulary_never_reaches_disk(store):
 
 def test_the_refusal_names_the_states_it_knows(store):
     with pytest.raises(ValueError, match="seeded, new, incomplete"):
-        validated("nonsense")
+        check_state("nonsense")
 
 
 def test_a_fix_state_outside_the_vocabulary_never_reaches_disk(store):
@@ -103,9 +109,9 @@ def test_every_state_a_writer_produces_is_in_the_vocabulary():
     """The enum and the writers cannot drift apart silently: these are the
     literals `pipeline.py` and `fix_agent.py` actually pass."""
     for state in ("seeded", "new", "incomplete", "quarantined", "promoted"):
-        assert validated(state) == state
+        check_state(state)  # raises if the writers and the enum drifted apart
     for fix_state in ("pr_open", "incomplete"):
-        assert validated_fix(fix_state) == fix_state
+        check_fix_state(fix_state)
 
 
 # ---------------------------------------------------------------------------

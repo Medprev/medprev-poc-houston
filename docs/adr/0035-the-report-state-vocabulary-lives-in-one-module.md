@@ -41,8 +41,9 @@ exists to produce. Measured on `origin/main` (`0475f8c`), it had no owner.
 
 `houston/report_state.py` owns the vocabulary: `ReportState` and `FixState` as `StrEnum`, the three
 derived collections (`NEEDS_INVESTIGATION`, `BLOCKING`, `DISPLAY_ORDER`), and the questions the rest
-of the package asks. The four scattered lists are gone; `metrics.BLOCKING_STATES` survives as a
-tuple derived from `BLOCKING`, because it is also the operator-facing message.
+of the package asks. The four scattered lists are gone, `metrics.BLOCKING_STATES` included: `cli.py` prints the
+operator message from `report_state.BLOCKING` directly rather than through a constant `metrics.py`
+only re-exported.
 
 **The two questions answer an unreadable state differently, and that is the point.**
 
