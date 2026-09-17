@@ -21,7 +21,7 @@ from houston.dedup import (
     cap,
     filter_needing_investigation,
     filter_new,
-    needs_investigation,
+    report_needs_investigation,
 )
 from houston.fix_agent import FixResult
 from houston.frontmatter import (
@@ -245,7 +245,7 @@ def plan_run(
     on, without spending anything (E4 costs money; this does not)."""
     findings = collect_fn(
         window_hours=window_hours,
-        should_enrich=lambda fp: needs_investigation(fp, store),
+        should_enrich=lambda fp: report_needs_investigation(fp, store),
     )
     new_findings = filter_needing_investigation(findings, store)
     kept, dropped = cap(new_findings, max_findings=max_findings)

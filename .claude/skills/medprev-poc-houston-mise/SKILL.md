@@ -32,7 +32,8 @@ venv consistently.
   reports what runs have actually cost.
 - `mise run promote <fingerprint>` -- print (never run) a ready `gh issue create` for one report.
 - `mise run metrics` -- false-positive rate, cost percentiles, and whether the phase can close (refuses
-  while any report is `state: new`).
+  while any report is `new`, `incomplete`, or `quarantined`, plus any state this package cannot
+  parse -- ADR-0035).
 
 ## Adding a task
 

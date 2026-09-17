@@ -73,6 +73,12 @@ that owns the vocabulary instead of restating it. `tests/test_report_corpus.py` 
 set on purpose: it is the independent witness that the committed corpus is in the vocabulary, and
 deriving it from the enum would let the enum validate itself.
 
+**One name meant two things.** `dedup.needs_investigation(fingerprint)` and
+`report_state.needs_investigation(state)` shared a name with opposite answers for an unreadable
+input -- `dedup`'s already needed a local alias to avoid a real import cycle, and `pipeline.py`
+imports the `dedup` one bare. Renamed to `dedup.report_needs_investigation`, so a future edit that
+swaps the import cannot silently swap the meaning.
+
 **One YAML writer, one coercion.** The package had two `yaml.safe_dump` call sites — `to_markdown`
 and `_write_document` — and this ADR's first version coerced the fields of the first one only. Since
 `fix_agent` now returns `FixState` members, `record_fix_attempt` fed a member straight into the
@@ -135,6 +141,9 @@ them is how the gap stays visible instead of looking like an oversight.
   `DISPLAY_ORDER`.
 
 ### Follow-up (continued)
+
+- `.claude/skills/medprev-poc-houston-mise/SKILL.md` described the pre-ADR-0035 `can_close_phase` rule
+  (`state: new` alone); updated to name the full set plus the unreadable-state case.
 
 - The two enums share values (`incomplete` is in both), so `check_fix_state(ReportState.INCOMPLETE)`
   passes: `StrEnum` gives naming, not type separation. Real separation would mean non-overlapping

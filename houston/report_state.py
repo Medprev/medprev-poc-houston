@@ -21,9 +21,15 @@ from enum import StrEnum
 
 
 class ReportState(StrEnum):
-    """What a report is waiting on. The first four are written by code, the
-    last two by a human -- that decision is the instrument measuring the
-    false-positive rate, so it stays a human gesture (ADR-0028)."""
+    """What a report is waiting on.
+
+    `SEEDED`/`NEW`/`INCOMPLETE`/`QUARANTINED` are written only by code.
+    `PROMOTED` has two writers -- a human decides it, but `record_promotion`
+    is the one that writes it, right after `houston promote --create` files
+    the issue. `DISCARDED` has none: nothing in the package ever writes it,
+    on purpose, because the promoted/discarded split is the instrument
+    measuring the false-positive rate and stays a human gesture end to end
+    (ADR-0028) -- see the ADR's "Bad" section for the cost of that."""
 
     SEEDED = "seeded"            # pre-existing debt, recorded without investigating (ADR-0010)
     NEW = "new"                  # investigated, waiting on a human decision
@@ -50,15 +56,23 @@ class FixState(StrEnum):
     REJECTED = "rejected"  # human-owned, no writer
 
 
+# A tuple, not a set: it renders into an error message, and a frozenset's
+# iteration order is not guaranteed across runs.
+WRITABLE_FIX_ORDER = ("pr_open", "incomplete")
+
 # The fix states code is allowed to write. `MERGED`/`REJECTED` are the
 # reviewer's verdict on the PR: readable vocabulary, so a human who edits the
 # file by hand gets a name for what they mean -- and unwritable, so no call
 # site can record a verdict nobody gave. The `# human-owned` comment promised
 # this; only the frozenset enforces it.
-WRITABLE_FIX = frozenset({FixState.PR_OPEN, FixState.INCOMPLETE})
+WRITABLE_FIX = frozenset(FixState(v) for v in WRITABLE_FIX_ORDER)
 
 # Work the phase still owes, in the order the incident page lists it.
 BLOCKING = (ReportState.NEW, ReportState.INCOMPLETE, ReportState.QUARANTINED)
+# One entry per state, in the order the incident page lists it -- checked
+# for length as well as membership (tests/test_report_state.py), because a
+# duplicate here renders a state's tile twice on the page and a set
+# comparison alone would not see it.
 DISPLAY_ORDER = (
     ReportState.NEW,
     ReportState.INCOMPLETE,
@@ -140,7 +154,7 @@ def check_writable_fix_state(raw: str) -> None:
     edited) and "may Houston record this" (a call site)."""
     check_fix_state(raw)
     if FixState(raw) not in WRITABLE_FIX:
-        writable = ", ".join(s.value for s in WRITABLE_FIX)
+        writable = ", ".join(WRITABLE_FIX_ORDER)
         raise ValueError(
             f"fix state {str(raw)!r} is the reviewer's verdict on the PR, not "
             f"something Houston observes -- code may write: {writable}"

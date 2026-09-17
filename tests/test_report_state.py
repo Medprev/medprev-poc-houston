@@ -184,11 +184,13 @@ def test_every_state_is_classified_as_blocking_or_not():
     )
 
 
-def test_the_display_order_covers_every_state():
-    """`generate_site` renders by this order and drops what is missing from
-    it -- a state added to the enum and forgotten here disappears from the
-    page rather than showing up unsorted."""
+def test_the_display_order_covers_every_state_exactly_once():
+    """`generate_site` renders one tile per entry. A set comparison alone is
+    blind to a duplicate -- `(NEW, NEW, INCOMPLETE, ...)` covers the same set
+    and would render the `new` tile twice; the length check is what a
+    duplicate actually breaks."""
     assert set(DISPLAY_ORDER) == set(ReportState)
+    assert len(DISPLAY_ORDER) == len(ReportState)
 
 
 def test_the_fix_vocabulary_says_which_values_have_a_writer():

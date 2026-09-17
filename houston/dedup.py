@@ -18,10 +18,16 @@ def filter_new(
     return [f for f in findings if not already_reported(f.fingerprint, store)]
 
 
-def needs_investigation(fingerprint: str, store: ReportStore = DEFAULT_STORE) -> bool:
+def report_needs_investigation(fingerprint: str, store: ReportStore = DEFAULT_STORE) -> bool:
     """Predicate form of filter_needing_investigation. The collector uses it
     to decide which findings are worth an extra per-finding detail call, so
-    the expensive fan-out follows the same rule as the investigation itself."""
+    the expensive fan-out follows the same rule as the investigation itself.
+
+    Named for what it takes -- a fingerprint, answered by a report on disk
+    -- because `report_state.needs_investigation` takes a *state* and
+    answers the opposite way for one nobody can read; the two used to share
+    this name with opposite signatures, one import alias away from a
+    silent swap."""
     path = store.path(fingerprint)
     if not path.exists():
         return True
@@ -39,7 +45,7 @@ def filter_needing_investigation(
     what `houston run`/`houston investigate` should use; `houston seed`
     keeps using `filter_new` (existence-only), since seeding must never
     overwrite an already-decided or already-investigated report."""
-    return [f for f in findings if needs_investigation(f.fingerprint, store)]
+    return [f for f in findings if report_needs_investigation(f.fingerprint, store)]
 
 
 # Severity is computed by each source at real effort (ADR-0009 spent a whole

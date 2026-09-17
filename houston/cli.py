@@ -67,7 +67,7 @@ def cmd_metrics(args: argparse.Namespace) -> int:
     m = compute(reports)
     print(f"total reports: {m.total}")
     for state, count in sorted(m.by_state.items()):
-        print(f"  {state}: {count}")
+        print(f"  {state or '<no state>'}: {count}")
     fp = f"{m.false_positive_rate:.1%}" if m.false_positive_rate is not None else "n/a (no promoted+discarded yet)"
     print(f"false-positive rate: {fp}")
     print(f"reports carrying an issue link: {m.with_issue_link}")
