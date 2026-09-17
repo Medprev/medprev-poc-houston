@@ -14,8 +14,6 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import yaml
-
 from houston.dedup import (
     cap,
     filter_needing_investigation,
@@ -25,8 +23,11 @@ from houston.dedup import (
 from houston.fix_agent import FixResult
 from houston.frontmatter import (
     QUARANTINED_STATE,
+    Cost,
     Report,
     WriteResult,
+    record_fix_attempt,
+    record_promotion,
     split_document,
     write_report,
 )
@@ -139,25 +140,6 @@ def promotion_blockers(
     if raw:
         blockers.append(f"issue body carries unexpanded markers: {', '.join(raw)}")
     return blockers
-
-
-def update_front_matter(path: Path, **fields) -> None:
-    """Writes structured fields back into an existing report.
-
-    Values here are code-owned -- a URL `gh` printed, a state this CLI
-    chose -- never model text, so this does not re-run the PII gate over
-    a body that already passed it at write time (ADR-0030's "Bad" section
-    records this as a deliberate, still-open exception to
-    `write_report()` being the only gated path).
-
-    Patches the document rather than re-rendering the `Report`: every one of
-    the 153 committed reports gains keys on a re-render (none carries
-    ADR-0023's `cost.model`, 16 predate ADR-0019's `novelty`), so a rewrite
-    here would edit reports it was only meant to annotate."""
-    fm, body = split_document(path.read_text())
-    fm.update(fields)
-    yaml_block = yaml.safe_dump(fm, sort_keys=False, allow_unicode=True)
-    path.write_text(f"---\n{yaml_block}---{body}")
 
 
 # ---------------------------------------------------------------------------
@@ -378,7 +360,7 @@ def promote_report(
     if url is None:
         raise PipelineError("gh issue create failed -- report left untouched")
 
-    update_front_matter(command.path, issue=url, state="promoted")
+    record_promotion(command.path, url)
     return url
 
 
@@ -447,12 +429,21 @@ def fix_report(
         model=model, effort=effort, runner=runner,
     )
 
+    # Recorded before notifying, and recorded on every outcome: `gh` not
+    # being on PATH must not be what loses the URL of a PR the agent already
+    # pushed, and an attempt that ends without a PR still billed.
+    record_fix_attempt(
+        path, pr_url=result.pr_url, state=result.state, cost=Cost(
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            duration_s=result.duration_s,
+            usd=result.usd,
+            cache_read_input_tokens=result.cache_read_input_tokens,
+            cache_creation_input_tokens=result.cache_creation_input_tokens,
+            model=result.model,
+        ),
+    )
     if result.pr_url:
-        # Record before notifying: `gh` not being on PATH must not be what
-        # loses the URL of a PR the agent already pushed and billed for.
-        update_front_matter(path, fix_pr=result.pr_url, fix_state=result.state)
         notify_fn(issue_url, f"PR aberto pelo Houston fix agent: {result.pr_url}")
-    elif result.error:
-        update_front_matter(path, fix_pr=None, fix_state="incomplete")
 
     return FixOutcome(repo_info=repo_info, issue_url=issue_url, result=result)

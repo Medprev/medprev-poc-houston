@@ -10,11 +10,13 @@ ADR-0030).
 
 `ReportStore` is the intended single place a report *body* reaches
 `reports/` -- write() and write_quarantined() below are the only writers
-this module owns. One exception, out of this module's scope: `houston/pipeline.py`'s
-`update_front_matter` writes `issue`/`state`/`fix_pr`/`fix_state`
-directly, bypassing both this store and the PII gate,
-because those values are code-owned (a URL `gh` printed, a state the CLI
-chose) rather than model text -- see ADR-0030's "Bad" section. `quarantine`
+this module owns. One exception, out of this module's scope:
+`frontmatter.record_promotion` and `frontmatter.record_fix_attempt` patch
+`issue`/`state` and `fix_pr`/`fix_state`/`fix_cost` into an existing
+document, bypassing both this store and the PII gate, because those values
+are code-owned (a URL `gh` printed, a state the CLI chose, a cost parsed
+from the model runner's envelope) rather than model text -- see ADR-0030's
+"Bad" section and ADR-0034. `quarantine`
 is a property, computed on every access from `self.root`, which is what
 makes the import-time-snapshot problem disappear by construction rather
 than by test discipline."""

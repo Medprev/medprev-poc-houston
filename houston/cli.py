@@ -77,6 +77,9 @@ def cmd_metrics(args: argparse.Namespace) -> int:
             f"{state}=${spent:.4f}" for state, spent in sorted(m.usd_by_state.items())
         )
         print(f"spend by state: {by_state}")
+    if m.with_fix_run:
+        print(f"fix spend: ${m.fix_usd_total:.4f} over {m.with_fix_run} report(s)  "
+              f"— investigation + fix: ${m.usd_grand_total:.4f}")
     print(f"input tokens  p50={m.input_tokens_p50:.0f}  p95={m.input_tokens_p95:.0f}")
     print(f"duration (s)  p50={m.duration_s_p50:.1f}  p95={m.duration_s_p95:.1f}")
 

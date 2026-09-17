@@ -16,7 +16,12 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from houston.agent import _error_text, _input_tokens, _payload_or_none
+from houston.agent import (
+    _billed_model,
+    _error_text,
+    _input_tokens,
+    _payload_or_none,
+)
 from houston.model_runner import DEFAULT_RUNNER, ModelRun, ModelRunner
 from houston.service_repos import (  # noqa: F401 -- re-exported for callers/tests
     load_service_repos,
@@ -83,6 +88,10 @@ class FixResult:
     branch: str | None = None
     cache_read_input_tokens: int = 0
     cache_creation_input_tokens: int = 0
+    # The model the CLI reports having billed, same field agent.py records
+    # for the investigation: the fix runs on its own pinned tier, so `usd`
+    # is uninterpretable without it (ADR-0023).
+    model: str | None = None
 
 
 def _extract_pr_url(text: str) -> str | None:
@@ -152,6 +161,7 @@ def _result(
     branch: str | None = None,
     error: str | None = None,
     fallback_duration_s: float = 0.0,
+    requested_model: str = DEFAULT_MODEL,
 ) -> FixResult:
     usage = (payload or {}).get("usage") or {}
     total_input, cache_read, cache_creation = _input_tokens(usage)
@@ -168,6 +178,7 @@ def _result(
         branch=branch,
         cache_read_input_tokens=cache_read,
         cache_creation_input_tokens=cache_creation,
+        model=_billed_model(payload, requested_model),
     )
 
 
@@ -226,7 +237,7 @@ def fix(
         return _result(
             partial, "incomplete", branch=branch,
             error=_error_text(partial, "", prefix=f"timed out after {timeout_s}s"),
-            fallback_duration_s=float(timeout_s),
+            fallback_duration_s=float(timeout_s), requested_model=model,
         )
 
     payload = _payload_or_none(outcome.stdout)
@@ -235,6 +246,7 @@ def fix(
         return _result(
             None, "incomplete", branch=branch,
             error=f"non-JSON stdout: {outcome.stdout[:500]}",
+            requested_model=model,
         )
 
     result_text = payload.get("result", "")
@@ -244,13 +256,16 @@ def fix(
     # exit code 1 but a real PR exists.  A PR URL in the output is the
     # strongest signal; non-zero exit without one is incomplete.
     if pr_url:
-        return _result(payload, "pr_open", pr_url=pr_url, branch=branch)
+        return _result(
+            payload, "pr_open", pr_url=pr_url, branch=branch, requested_model=model,
+        )
 
     if outcome.returncode != 0 or payload.get("is_error") or not result_text:
         return _result(
             payload, "incomplete", branch=branch,
-            error=_error_text(payload, outcome.stderr),
+            error=_error_text(payload, outcome.stderr), requested_model=model,
         )
 
     return _result(payload, "incomplete", branch=branch,
-                   error="agent finished but no PR URL found in output")
+                   error="agent finished but no PR URL found in output",
+                   requested_model=model)

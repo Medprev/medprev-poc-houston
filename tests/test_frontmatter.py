@@ -2,8 +2,16 @@
 reports/ as text — the body lands in reports/.quarantine/ and only a
 redacted record stays behind."""
 import dataclasses
+from pathlib import Path
 
-from houston.frontmatter import Cost, Report, load_report, write_report
+from houston.frontmatter import (
+    Cost,
+    Report,
+    load_report,
+    record_fix_attempt,
+    record_promotion,
+    write_report,
+)
 from houston.models import Finding
 
 
@@ -136,6 +144,11 @@ def test_from_markdown_recovers_every_field_to_markdown_rendered():
     report.issue = "https://github.com/Medprev/medprev-product-backlog/issues/1"
     report.fix_pr = "https://github.com/Medprev/medprev-web-app/pull/1372"
     report.fix_state = "pr_open"
+    report.fix_cost = Cost(
+        input_tokens=90000, output_tokens=4200, duration_s=311.5, usd=1.84,
+        cache_read_input_tokens=80000, cache_creation_input_tokens=3000,
+        model="claude-sonnet-5",
+    )
 
     # Without this, the test passes vacuously for exactly the drift it exists
     # to catch: a field rendered but not parsed falls to its default on both
@@ -164,7 +177,8 @@ def test_a_report_on_disk_does_not_re_render_byte_identically():
     committed reports gain keys on a re-render, not just the 16 legacy ones --
     no report carries ADR-0023's `cost.model`, which is enough on its own.
     Patching a report in place therefore has to preserve the document rather
-    than re-render it, which is what `update_front_matter` does."""
+    than re-render it, which is what `record_promotion` and
+    `record_fix_attempt` do."""
     legacy = (
         "---\nfingerprint: et-legacy\nsource: error_tracking\nreason: new\n"
         "service: medprev-rest-api\nenvironment: production\n"
@@ -178,3 +192,86 @@ def test_a_report_on_disk_does_not_re_render_byte_identically():
     assert report.cost.model is None
     assert "novelty:" not in legacy
     assert "novelty: ''" in report.to_markdown()
+
+
+# ---------------------------------------------------------------------------
+# write-back: what a promotion and a fix attempt are allowed to change
+# ---------------------------------------------------------------------------
+
+def _promoted_on_disk(store, **fields) -> Path:
+    report = Report.from_finding(_finding(), state="promoted", body="Causa raiz: timeout.")
+    for name, value in fields.items():
+        setattr(report, name, value)
+    return write_report(report).path
+
+
+def test_record_promotion_writes_the_issue_and_the_state(store):
+    path = _promoted_on_disk(store)
+
+    record_promotion(path, "https://github.com/Medprev/medprev-product-backlog/issues/9")
+
+    parsed = load_report(path)
+    assert parsed.issue == "https://github.com/Medprev/medprev-product-backlog/issues/9"
+    assert parsed.state == "promoted"
+
+
+def test_a_failed_attempt_never_erases_the_pr_a_previous_one_opened(store):
+    """#34. The second `houston fix` run on a finding used to write
+    `fix_pr=None, fix_state="incomplete"` over the first run's real URL --
+    a PR that exists on GitHub, unreachable from the report that caused it.
+    Three reports in the committed corpus carry such a URL."""
+    path = _promoted_on_disk(
+        store,
+        fix_pr="https://github.com/Medprev/medprev-web-app/pull/1372",
+        fix_state="pr_open",
+        fix_cost=Cost(usd=1.2, model="claude-sonnet-5"),
+    )
+
+    record_fix_attempt(
+        path, pr_url=None, state="incomplete", cost=Cost(usd=0.4, model="claude-sonnet-5"),
+    )
+
+    parsed = load_report(path)
+    assert parsed.fix_pr == "https://github.com/Medprev/medprev-web-app/pull/1372"
+    assert parsed.fix_state == "pr_open"  # describes the finding, not the attempt
+    assert parsed.fix_cost.usd == 1.6  # the failed retry still billed
+
+
+def test_a_failed_first_attempt_is_recorded_as_incomplete(store):
+    """The state only stands still when there is a PR to protect."""
+    path = _promoted_on_disk(store)
+
+    record_fix_attempt(path, pr_url=None, state="incomplete", cost=Cost(usd=0.4))
+
+    parsed = load_report(path)
+    assert parsed.fix_pr is None
+    assert parsed.fix_state == "incomplete"
+    assert parsed.fix_cost.usd == 0.4
+
+
+def test_the_fix_agent_spend_lands_on_disk_apart_from_the_investigation(store):
+    """`FixResult.usd` existed and reached nothing: `houston metrics` read
+    `cost.usd`, which is what the *investigation* billed. A finding whose fix
+    ran was reported at the investigation's price."""
+    path = _promoted_on_disk(store, cost=Cost(usd=0.349, model="claude-sonnet-5"))
+
+    record_fix_attempt(
+        path, pr_url="https://github.com/org/repo/pull/7", state="pr_open",
+        cost=Cost(input_tokens=90000, output_tokens=4200, duration_s=311.5,
+                  usd=1.84, model="claude-sonnet-5"),
+    )
+
+    parsed = load_report(path)
+    assert parsed.cost.usd == 0.349
+    assert parsed.fix_cost.usd == 1.84
+    assert parsed.fix_cost.model == "claude-sonnet-5"
+    assert parsed.fix_state == "pr_open"
+
+
+def test_a_report_with_no_fix_run_renders_no_fix_cost_key(store):
+    """149 of the 153 committed reports have no fix. An unconditional block
+    would move their bytes on the next re-render, for nothing."""
+    text = Report.from_finding(_finding(), body="Causa raiz: timeout.").to_markdown()
+
+    assert "fix_cost" not in text
+    assert Report.from_markdown(text).fix_cost is None

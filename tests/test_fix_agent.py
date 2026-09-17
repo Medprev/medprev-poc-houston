@@ -131,6 +131,10 @@ def test_successful_fix_extracts_pr_url(mock_count, mock_prep, mock_clean):
     assert result.state == "pr_open"
     assert result.pr_url == "https://github.com/Medprev/medprev-web-app/pull/42"
     assert result.usd == 2.15
+    # `usd` without the tier that billed it is uninterpretable (ADR-0023),
+    # and the fix agent runs on a different pinned tier than the
+    # investigation whose cost sits in the same report.
+    assert result.model == "sonnet"
 
 
 @patch("houston.fix_agent._cleanup_worktree")

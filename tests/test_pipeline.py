@@ -379,6 +379,38 @@ def test_fix_report_records_the_pr_and_notifies_the_issue(store):
     parsed = load_report(store / "et-fix-ok.md")
     assert parsed.fix_pr == "https://github.com/org/repo/pull/1"
     assert parsed.fix_state == "pr_open"
+    assert parsed.fix_cost.usd == 1.5
+
+
+def test_fix_report_records_what_the_attempt_billed(store):
+    """The FixResult -> front-matter mapping, end to end: an attempt that
+    opens no PR still spent money, and the report is where that number is
+    read from (`houston metrics`)."""
+    finding = _finding("et-fix-paid", service="medprev-rest-api")
+    write_report(Report.from_finding(finding, state="promoted", body="## Causa raiz\nfoo"))
+
+    def fix_fn(**kwargs):
+        return FixResult(
+            pr_url=None, body=None, input_tokens=90000, output_tokens=4200,
+            duration_s=311.5, usd=1.84, state="incomplete",
+            error="agent finished but no PR URL found in output",
+            cache_read_input_tokens=80000, cache_creation_input_tokens=3000,
+            model="claude-sonnet-5",
+        )
+
+    fix_report(
+        "et-fix-paid", issue="https://github.com/org/repo/issues/1", fix_fn=fix_fn,
+        resolve_repo_fn=lambda service, body="": {"repo": "org/repo", "path": "/tmp/fake"},
+        runner=object(), max_budget_usd="3.00", timeout_s=600, model="sonnet",
+        effort="high", notify_fn=lambda url, msg: None,
+    )
+
+    parsed = load_report(store / "et-fix-paid.md")
+    assert parsed.fix_cost.usd == 1.84
+    assert parsed.fix_cost.input_tokens == 90000
+    assert parsed.fix_cost.model == "claude-sonnet-5"
+    assert parsed.fix_state == "incomplete"
+    assert parsed.cost.usd == 0.0  # the investigation's own cost, untouched
 
 
 # ---------------------------------------------------------------------------

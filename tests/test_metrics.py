@@ -3,7 +3,8 @@ from houston.frontmatter import Cost, Report
 from houston.metrics import can_close_phase, compute
 
 
-def _report(state, input_tokens=0, duration_s=0.0, issue=None, usd=0.0) -> Report:
+def _report(state, input_tokens=0, duration_s=0.0, issue=None, usd=0.0,
+            fix_usd=None) -> Report:
     return Report(
         fingerprint="et-metrics", source="error_tracking", reason="SomeError",
         novelty="new", service="medprev-rest-api", environment="production",
@@ -12,6 +13,7 @@ def _report(state, input_tokens=0, duration_s=0.0, issue=None, usd=0.0) -> Repor
         state=state, body="",
         cost=Cost(input_tokens=input_tokens, duration_s=duration_s, usd=usd),
         issue=issue,
+        fix_cost=Cost(usd=fix_usd, model="claude-sonnet-5") if fix_usd else None,
     )
 
 
@@ -93,3 +95,31 @@ def test_percentiles_tolerate_reports_written_before_a_cost_field_existed():
     assert m.total == 2
     assert m.input_tokens_p50 == 100
     assert m.usd_total == 0.1
+
+
+def test_fix_spend_is_counted_and_kept_apart_from_the_investigation():
+    """The dollars `houston fix` bills reached no metric: `FixResult.usd`
+    was never written, and `usd_total` reads `cost.usd` -- the
+    investigation's price. Measured on the corpus: `et-082448ee...` carries
+    `fix_state: pr_open` with `usd: 0.349` -- the investigation's cost, while
+    the fix ran against a $3.00 cap. Amounts below are binary-exact so the
+    sums can be asserted without rounding."""
+    reports = [
+        _report("promoted", usd=0.25, fix_usd=1.5),
+        _report("promoted", usd=0.5),
+    ]
+
+    m = compute(reports)
+
+    assert m.usd_total == 0.75  # investigation only, unchanged meaning
+    assert m.fix_usd_total == 1.5
+    assert m.with_fix_run == 1
+    assert m.usd_grand_total == 2.25
+
+
+def test_no_fix_run_leaves_the_fix_numbers_at_zero():
+    m = compute([_report("promoted", usd=0.25)])
+
+    assert m.fix_usd_total == 0.0
+    assert m.with_fix_run == 0
+    assert m.usd_grand_total == m.usd_total
