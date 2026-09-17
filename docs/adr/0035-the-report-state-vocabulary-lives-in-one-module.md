@@ -120,6 +120,8 @@ them is how the gap stays visible instead of looking like an oversight.
 - `houston/dedup.py` lost its own copy of the rule and now asks the module, so the collector's
   expensive fan-out and the investigation itself cannot drift apart on what "needs investigating"
   means.
+- `.claude/skills/medprev-poc-houston-mise/SKILL.md` described the pre-ADR-0035 `can_close_phase` rule
+  (`state: new` alone); it now names the full set plus the unreadable-state case.
 
 ### Bad
 
@@ -140,10 +142,7 @@ them is how the gap stays visible instead of looking like an oversight.
   breakdown now names it too; the site's counter strip still skips it, because it iterates
   `DISPLAY_ORDER`.
 
-### Follow-up (continued)
-
-- `.claude/skills/medprev-poc-houston-mise/SKILL.md` described the pre-ADR-0035 `can_close_phase` rule
-  (`state: new` alone); updated to name the full set plus the unreadable-state case.
+### Follow-up
 
 - The two enums share values (`incomplete` is in both), so `check_fix_state(ReportState.INCOMPLETE)`
   passes: `StrEnum` gives naming, not type separation. Real separation would mean non-overlapping
