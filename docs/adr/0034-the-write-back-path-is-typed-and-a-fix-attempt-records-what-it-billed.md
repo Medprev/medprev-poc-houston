@@ -83,6 +83,13 @@ zeroing a cost field. This settles the *duplication* ADR-0033 pointed at, not th
 prescribed: `Report.from_finding` still has no `cost` parameter, so the cost is still attached after
 construction and `frozen=True` is still not mechanical.
 
+**A write-back that fails after the fact is reported, not raised.** `record_promotion` runs once the
+issue exists on GitHub, and `record_fix_attempt` once the agent run has billed. A malformed document
+or a permissions error at that point would otherwise escape as an unhandled traceback through a
+`cmd_*` that only catches `PipelineError`, taking the issue URL or the cost figure with it. Both use
+cases catch `WRITE_BACK_ERRORS` and hand the operator the salvaged facts through an `on_warning`
+callback — printing stays in `cli.py`, where ADR-0032 put it.
+
 **The patch is written beside the file and renamed over it.** `write_text` truncates before writing,
 and this path now runs on every fix attempt over a body that was already paid for and exists nowhere
 else.
@@ -99,7 +106,7 @@ to answer.
 - #34 cannot recur: no caller can express *zeroing* `fix_pr` (a real PR replaced by `None`). A retry that opens a second PR still replaces the URL -- see "Bad" below. Pinned by
   `test_a_failed_attempt_never_erases_the_pr_a_previous_one_opened`, which also asserts the failed
   retry's spend was added.
-- 277 tests pass (263 before, +14). `tests/test_report_corpus.py` is unedited and every existing
+- 279 tests pass (263 before, +16). `tests/test_report_corpus.py` is unedited and every existing
   assertion in `tests/test_report_golden.py` is untouched — the ADR-0029 rule that proves the report
   bytes did not move — and `mise run metrics` over the real 153-report corpus prints output
   byte-identical to the pre-change checkout, `diff`-verified. `ruff` clean.

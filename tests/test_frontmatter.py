@@ -207,7 +207,12 @@ def _promoted_on_disk(store, **fields) -> Path:
 
 
 def test_record_promotion_writes_the_issue_and_the_state(store):
-    path = _promoted_on_disk(store)
+    """Starts at `new`, which is the state a report is actually in when a
+    human promotes it -- starting at `promoted` made the state assertion
+    pass without the writer doing anything."""
+    report = Report.from_finding(_finding(), state="new", body="Causa raiz: timeout.")
+    path = write_report(report).path
+    assert load_report(path).state == "new"
 
     record_promotion(path, "https://github.com/Medprev/medprev-product-backlog/issues/9")
 
@@ -272,8 +277,9 @@ def test_the_fix_agent_spend_lands_on_disk_apart_from_the_investigation(store):
 
 
 def test_a_report_with_no_fix_run_renders_no_fix_cost_key(store):
-    """149 of the 153 committed reports have no fix. An unconditional block
-    would move their bytes on the next re-render, for nothing."""
+    """150 of the 153 committed reports never had a fix run. Presence is the
+    signal `metrics.compute` reads, so an unconditional zeroed block would
+    report a fix run on every one of them."""
     text = Report.from_finding(_finding(), body="Causa raiz: timeout.").to_markdown()
 
     assert "fix_cost" not in text

@@ -404,7 +404,7 @@ def test_billed_maps_every_number_both_agent_runs_report():
             assert getattr(cost, name) == value, f"{type(run).__name__}.{name}"
 
 
-def test_fix_report_survives_a_record_failure_after_a_paid_run(store, capsys):
+def test_fix_report_survives_a_record_failure_after_a_paid_run(store):
     """The run already happened and already billed by the time the write
     fails -- a malformed document, a permissions error. Losing the PR URL or
     the cost on top of that would double the damage, so the caller gets the
@@ -426,15 +426,18 @@ def test_fix_report_survives_a_record_failure_after_a_paid_run(store, capsys):
             state="pr_open", branch="houston/fix/et-fix-crash",
         )
 
+    warnings = []
     outcome = fix_report(
         "et-fix-crash", issue="https://github.com/org/repo/issues/1", fix_fn=fix_fn,
         resolve_repo_fn=lambda service, body="": {"repo": "org/repo", "path": "/tmp/fake"},
         runner=object(), max_budget_usd="3.00", timeout_s=600, model="sonnet",
-        effort="high", notify_fn=lambda url, msg: None,
+        effort="high", notify_fn=lambda url, msg: None, on_warning=warnings.append,
     )
 
     assert outcome.result.pr_url == "https://github.com/org/repo/pull/9"
-    assert "spent $1.5000" in capsys.readouterr().err
+    assert len(warnings) == 1
+    assert "spent $1.5000" in warnings[0]
+    assert "pull/9" in warnings[0]
 
 
 def test_fix_report_records_what_the_attempt_billed(store):
@@ -704,3 +707,27 @@ def test_the_filed_issue_body_keeps_the_datadog_link(store):
 
     assert command.issue_body.startswith("**Link do Datadog:**")
     assert "Seeded, not investigated." in command.issue_body
+
+
+def test_promote_report_hands_back_the_url_when_the_write_back_fails(store):
+    """The issue exists on GitHub by the time `record_promotion` runs, so a
+    write that fails there must not take the URL with it -- the operator
+    needs it to finish by hand, and the next run would file a duplicate."""
+    finding = _finding("et-promote-crash", service="medprev-rest-api")
+    path = write_report(Report.from_finding(
+        finding, state="new", body="## Corpo da issue\ncorpo",
+    )).path
+    command = build_promote_command("et-promote-crash")
+    path.write_text("not a valid document at all")  # the write-back will raise
+    warnings = []
+
+    url = promote_report(
+        command, account="carlacurymed", required_account="carlacurymed",
+        create_issue_fn=lambda title, body: "https://github.com/org/repo/issues/7",
+        on_warning=warnings.append,
+    )
+
+    assert url == "https://github.com/org/repo/issues/7"
+    assert len(warnings) == 1
+    assert "issues/7" in warnings[0]
+    assert "by hand" in warnings[0]

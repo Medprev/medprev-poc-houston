@@ -172,6 +172,14 @@ def create_issue(title: str, body: str) -> str | None:
     return urls[-1] if urls else None
 
 
+def _warn(message: str) -> None:
+    """Where a use case reports something that already happened for real --
+    an issue filed, an agent run billed -- but could not be written back to
+    the report. Printing stays in this module (ADR-0032); the use cases hand
+    the text over through a callback."""
+    print(f"warning: {message}", file=sys.stderr)
+
+
 def cmd_promote(args: argparse.Namespace) -> int:
     """Prints a ready gh issue create command for a report, and with
     --create runs it and records the result.
@@ -203,7 +211,7 @@ def cmd_promote(args: argparse.Namespace) -> int:
     try:
         url = promote_report(
             command, account=active_gh_account(), required_account=ISSUE_ACCOUNT,
-            create_issue_fn=create_issue,
+            create_issue_fn=create_issue, on_warning=_warn,
         )
     except PromotionBlocked as exc:
         for blocker in exc.blockers:
@@ -240,7 +248,7 @@ def cmd_fix(args: argparse.Namespace) -> int:
             resolve_repo_fn=resolve_repo, runner=DEFAULT_RUNNER,
             max_budget_usd=args.max_budget_usd, timeout_s=args.timeout_s,
             model=args.model, effort=args.effort, notify_fn=notify,
-            on_start=on_start,
+            on_start=on_start, on_warning=_warn,
         )
     except PipelineError as exc:
         print(str(exc), file=sys.stderr)

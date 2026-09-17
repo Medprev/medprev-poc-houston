@@ -10,7 +10,6 @@ themselves. Everything else a `cmd_*` function used to do -- deciding what
 counts as a blocker, building a report, writing it through the gate --
 lives here, where it can be called and tested without a `Namespace`.
 """
-import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -38,6 +37,14 @@ from houston.frontmatter import (
 from houston.model_runner import ModelRunner
 from houston.models import Finding
 from houston.report_store import DEFAULT_STORE, ReportStore
+
+# What the document writers raise when a report on disk is not the shape
+# they expect: no file, no `---` fences, a front-matter key holding a scalar
+# where a mapping belongs, a cost value stored as a string. Every one of them
+# lands *after* the step that already happened for real -- an issue filed on
+# GitHub, an agent run billed -- so the use case reports it rather than dying
+# on it and taking the URL or the cost figure with it.
+WRITE_BACK_ERRORS = (AttributeError, OSError, TypeError, ValueError, yaml.YAMLError)
 
 
 class BilledRun(Protocol):
@@ -365,6 +372,7 @@ def promote_report(
     account: str | None,
     required_account: str,
     create_issue_fn: Callable[[str, str], str | None],
+    on_warning: Callable[[str], None] = lambda _: None,
 ) -> str:
     """Files the issue and records `issue:` + `state: promoted`. Raises
     PromotionBlocked when a guard refuses before anything is filed
@@ -385,7 +393,14 @@ def promote_report(
     if url is None:
         raise PipelineError("gh issue create failed -- report left untouched")
 
-    record_promotion(command.path, url)
+    try:
+        record_promotion(command.path, url)
+    except WRITE_BACK_ERRORS as exc:
+        on_warning(
+            f"issue filed at {url}, but recording it on {command.path.name} failed: "
+            f"{exc} -- write `issue: {url}` and `state: promoted` by hand, or the "
+            f"next run will file it again"
+        )
     return url
 
 
@@ -413,6 +428,7 @@ def fix_report(
     effort: str,
     notify_fn: Callable[[str, str], None] = lambda *_: None,
     on_start: Callable[[dict, str], None] = lambda *_: None,
+    on_warning: Callable[[str], None] = lambda _: None,
     store: ReportStore = DEFAULT_STORE,
 ) -> FixOutcome:
     """Creates a PR that fixes a promoted finding. Costs money -- runs a
@@ -465,12 +481,11 @@ def fix_report(
         record_fix_attempt(
             path, pr_url=result.pr_url, state=result.state, cost=billed(result),
         )
-    except (OSError, ValueError, yaml.YAMLError) as exc:
-        print(
-            f"warning: fix attempt for {fingerprint} spent ${result.usd:.4f} and "
+    except WRITE_BACK_ERRORS as exc:
+        on_warning(
+            f"fix attempt for {fingerprint} spent ${result.usd:.4f} and "
             f"{'opened ' + result.pr_url if result.pr_url else 'did not open a PR'}, "
-            f"but recording it on the report failed: {exc}",
-            file=sys.stderr,
+            f"but recording it on the report failed: {exc}"
         )
     if result.pr_url:
         notify_fn(issue_url, f"PR aberto pelo Houston fix agent: {result.pr_url}")
