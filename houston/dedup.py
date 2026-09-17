@@ -4,6 +4,7 @@ from collections import defaultdict
 
 from houston.frontmatter import load_report
 from houston.models import Finding
+from houston.report_state import needs_investigation as state_needs_investigation
 from houston.report_store import DEFAULT_STORE, ReportStore
 
 
@@ -17,15 +18,6 @@ def filter_new(
     return [f for f in findings if not already_reported(f.fingerprint, store)]
 
 
-# States that mean "no real investigation happened yet" -- a report in one
-# of these still needs its evidence/root-cause/timeline generated. `new`
-# (already investigated, pending a human decision), `promoted`,
-# `discarded`, and `quarantined` (investigated and paid for, text held
-# outside git, waiting on a human) are excluded on purpose: re-investigating
-# those would overwrite a human decision or repeat a paid investigation.
-NEEDS_INVESTIGATION_STATES = {"seeded", "incomplete"}
-
-
 def needs_investigation(fingerprint: str, store: ReportStore = DEFAULT_STORE) -> bool:
     """Predicate form of filter_needing_investigation. The collector uses it
     to decide which findings are worth an extra per-finding detail call, so
@@ -33,7 +25,7 @@ def needs_investigation(fingerprint: str, store: ReportStore = DEFAULT_STORE) ->
     path = store.path(fingerprint)
     if not path.exists():
         return True
-    return load_report(path).state in NEEDS_INVESTIGATION_STATES
+    return state_needs_investigation(load_report(path).state)
 
 
 def filter_needing_investigation(

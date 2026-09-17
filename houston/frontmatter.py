@@ -17,13 +17,14 @@ import yaml
 
 from houston.models import Finding
 from houston.pii_gate import scan
+from houston.report_state import ReportState, validated, validated_fix
 from houston.report_store import DEFAULT_STORE, ReportStore
 
 # A PII hit is not "nothing happened": the investigation ran and was paid
 # for. The full text goes to the gitignored quarantine, and this state is
 # what stays in reports/ so dedup stops re-selecting the finding and the
 # spend stays visible to metrics (ADR-0015).
-QUARANTINED_STATE = "quarantined"
+QUARANTINED_STATE = ReportState.QUARANTINED.value
 
 # Rendered into the body by `to_markdown` and taken back out by
 # `from_markdown`. One literal, so the injection has an inverse: keeping a
@@ -147,12 +148,15 @@ class Report:
                 "last_seen": self.last_seen_ms,
             },
             "severity": self.severity,
-            "state": self.state,
+            # Coerced, not passed through: a `ReportState` member satisfies
+            # the `str` annotation and makes `yaml.safe_dump` raise
+            # RepresenterError at write time, after the run is paid for.
+            "state": str(self.state),
             "cost": _cost_block(self.cost),
             "issue": self.issue,
             "datadog_url": self.datadog_url,
             "fix_pr": self.fix_pr,
-            "fix_state": self.fix_state,
+            "fix_state": str(self.fix_state) if self.fix_state is not None else None,
         }
         # Conditional, unlike every key above it, because presence is the
         # signal: `metrics.compute` reads `if r.fix_cost` as "a fix ran on
@@ -251,7 +255,12 @@ def write_report(report: Report, store: ReportStore = DEFAULT_STORE) -> WriteRes
 
     A hit routes the full text to reports/.quarantine/ (gitignored) and
     leaves a redacted, PII-free record in reports/ — see ADR-0015 for why
-    writing nothing meant paying for the same investigation on every run."""
+    writing nothing meant paying for the same investigation on every run.
+
+    Refuses a state outside the vocabulary before rendering anything: a
+    typo used to reach disk, parse back as itself, and become its own row
+    in `houston metrics`'s by-state table."""
+    validated(report.state)
     markdown = report.to_markdown()
     hits = scan(markdown)
     if hits:
@@ -339,7 +348,9 @@ def record_promotion(path: Path, issue_url: str) -> None:
     """The report now has an issue in the shared backlog."""
     front_matter, body = split_document(path.read_text())
     _write_document(
-        path, {**front_matter, "issue": issue_url, "state": "promoted"}, body,
+        path,
+        {**front_matter, "issue": issue_url, "state": ReportState.PROMOTED.value},
+        body,
     )
 
 
@@ -390,6 +401,7 @@ def record_fix_attempt(
 
     Reads the document rather than taking one the caller already read: an
     agent run of minutes sits between `fix_report`'s read and this write."""
+    validated_fix(state)
     front_matter, body = split_document(path.read_text())
     recorded_pr = front_matter.get("fix_pr")
     # Built in the order `to_markdown` renders them, so a report that had no

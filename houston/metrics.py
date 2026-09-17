@@ -3,13 +3,16 @@ is typed by hand, same pattern as medprev-qa-agent."""
 from dataclasses import dataclass, field
 
 from houston.frontmatter import Report, load_report
+from houston.report_state import BLOCKING, blocks_phase
 from houston.report_store import DEFAULT_STORE, ReportStore
 
 # A report in one of these is work the phase still owes: `new` needs a human
 # decision, `incomplete` needs a rerun, `quarantined` needs a human to read
 # the quarantined text. `seeded` does not block — it is pre-existing debt
-# recorded deliberately (ADR-0010, ADR-0015).
-BLOCKING_STATES = ("new", "incomplete", "quarantined")
+# recorded deliberately (ADR-0010, ADR-0015). Named here for the operator
+# message; the rule itself lives in `report_state.blocks_phase`, which also
+# answers for a state this package cannot read.
+BLOCKING_STATES = tuple(s.value for s in BLOCKING)
 
 
 @dataclass
@@ -108,5 +111,5 @@ def can_close_phase(reports: list[Report]) -> tuple[bool, int]:
     outside git, unread). Counting only `new` let a phase close on a run
     where every single investigation had timed out — the pending count it
     returns is the blocker."""
-    pending = sum(1 for r in reports if r.state in BLOCKING_STATES)
+    pending = sum(1 for r in reports if blocks_phase(r.state))
     return pending == 0, pending
