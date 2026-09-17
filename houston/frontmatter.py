@@ -359,8 +359,12 @@ def record_fix_attempt(
     leaves `fix_state` alone with it, because `incomplete` would describe
     the attempt while the field describes the finding. The untyped
     `update_front_matter(path, fix_pr=None, fix_state="incomplete")` this
-    replaces could only say "erase it"."""
+    replaces could only say "erase it".
+
+    Reads the document rather than taking one the caller already read: an
+    agent run of minutes sits between `fix_report`'s read and this write."""
     front_matter, body = split_document(path.read_text())
+    recorded_pr = front_matter.get("fix_pr")
     fields: dict = {
         "fix_cost": _cost_block(
             _accumulated(_cost_from(front_matter.get("fix_cost")), cost)
@@ -368,6 +372,6 @@ def record_fix_attempt(
     }
     if pr_url:
         fields["fix_pr"] = pr_url
-    if pr_url or not front_matter.get("fix_pr"):
+    if pr_url or not recorded_pr:
         fields["fix_state"] = state
     _write_document(path, {**front_matter, **fields}, body)

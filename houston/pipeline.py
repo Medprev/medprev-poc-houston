@@ -13,6 +13,7 @@ lives here, where it can be called and tested without a `Namespace`.
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Protocol
 
 from houston.dedup import (
     cap,
@@ -34,6 +35,33 @@ from houston.frontmatter import (
 from houston.model_runner import ModelRunner
 from houston.models import Finding
 from houston.report_store import DEFAULT_STORE, ReportStore
+
+
+class BilledRun(Protocol):
+    """What both agent runs report back. `agent.InvestigationResult` and
+    `fix_agent.FixResult` carry the same seven numbers under the same names,
+    so the mapping onto `Cost` is written once -- the investigation path used
+    to copy them field by field after construction, which is the shape of
+    drift that dropped `fix_pr`/`fix_state` in #35."""
+    input_tokens: int
+    output_tokens: int
+    duration_s: float
+    usd: float
+    cache_read_input_tokens: int
+    cache_creation_input_tokens: int
+    model: str | None
+
+
+def billed(run: BilledRun) -> Cost:
+    return Cost(
+        input_tokens=run.input_tokens,
+        output_tokens=run.output_tokens,
+        duration_s=run.duration_s,
+        usd=run.usd,
+        cache_read_input_tokens=run.cache_read_input_tokens,
+        cache_creation_input_tokens=run.cache_creation_input_tokens,
+        model=run.model,
+    )
 
 
 class PipelineError(Exception):
@@ -282,13 +310,7 @@ def investigate_findings(
             ))
         else:
             report = Report.from_finding(finding, state="new", body=result.body)
-        report.cost.input_tokens = result.input_tokens
-        report.cost.output_tokens = result.output_tokens
-        report.cost.cache_read_input_tokens = result.cache_read_input_tokens
-        report.cost.cache_creation_input_tokens = result.cache_creation_input_tokens
-        report.cost.duration_s = result.duration_s
-        report.cost.usd = result.usd
-        report.cost.model = result.model
+        report.cost = billed(result)
         write_result = write_report(report, store)
         outcome = InvestigationOutcome(
             finding=finding, write=write_result,
@@ -433,15 +455,7 @@ def fix_report(
     # being on PATH must not be what loses the URL of a PR the agent already
     # pushed, and an attempt that ends without a PR still billed.
     record_fix_attempt(
-        path, pr_url=result.pr_url, state=result.state, cost=Cost(
-            input_tokens=result.input_tokens,
-            output_tokens=result.output_tokens,
-            duration_s=result.duration_s,
-            usd=result.usd,
-            cache_read_input_tokens=result.cache_read_input_tokens,
-            cache_creation_input_tokens=result.cache_creation_input_tokens,
-            model=result.model,
-        ),
+        path, pr_url=result.pr_url, state=result.state, cost=billed(result),
     )
     if result.pr_url:
         notify_fn(issue_url, f"PR aberto pelo Houston fix agent: {result.pr_url}")

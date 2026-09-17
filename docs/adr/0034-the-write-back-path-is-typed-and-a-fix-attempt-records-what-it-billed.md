@@ -66,6 +66,12 @@ fix actually touched: 149 of the 153 committed reports have no fix run, and an u
 would move bytes in every one of them on the next re-render, for nothing. `_cost_block`/`_cost_from`
 render and parse both blocks, so the fix's cost cannot drift from the investigation's.
 
+**One mapping from an agent run to a `Cost`.** `billed(run)` reads the seven numbers both
+`InvestigationResult` and `FixResult` report under the same names, behind a `BilledRun` Protocol that
+states the shape. The investigation path used to copy those seven fields onto `report.cost` by
+assignment after construction — debt ADR-0033 recorded and left to the write-path work, which is this
+PR. A rename on either result class now fails a test instead of silently zeroing a cost field.
+
 **`houston metrics` reports the two spends apart.** `usd_total` keeps meaning investigation spend;
 `fix_usd_total` and `with_fix_run` are new, `usd_grand_total` adds them. Folding the fix into
 `usd_total` would have made the per-finding investigation cost stop answering the question it exists
@@ -86,6 +92,8 @@ to answer.
   until the field was exercised on both sides. That is the invariant working as designed.
 - `houston fix`'s cost is now measurable per finding, which is what lets the PoC state a fix's price
   the way it already states an investigation's.
+- The investigation path's seven-line cost assignment block disappears into `billed()`, so both agent
+  runs reach `Cost` through one mapping instead of two copies that could drift apart.
 
 ### Bad
 

@@ -20,6 +20,7 @@ from houston.models import Finding
 from houston.pipeline import (
     PipelineError,
     PromotionBlocked,
+    billed,
     build_promote_command,
     fix_report,
     investigate_findings,
@@ -380,6 +381,27 @@ def test_fix_report_records_the_pr_and_notifies_the_issue(store):
     assert parsed.fix_pr == "https://github.com/org/repo/pull/1"
     assert parsed.fix_state == "pr_open"
     assert parsed.fix_cost.usd == 1.5
+
+
+def test_billed_maps_every_number_both_agent_runs_report():
+    """The Protocol's claim, checked rather than assumed: the investigation
+    and the fix report the same seven names. A rename on either side would
+    otherwise zero a cost field with both dataclasses still valid, and the
+    report is where those numbers are read from."""
+    numbers = {
+        "input_tokens": 90000, "output_tokens": 4200, "duration_s": 311.5,
+        "usd": 1.84, "cache_read_input_tokens": 80000,
+        "cache_creation_input_tokens": 3000, "model": "claude-sonnet-5",
+    }
+    runs = [
+        InvestigationResult(body="x", state="new", **numbers),
+        FixResult(pr_url=None, body=None, state="incomplete", **numbers),
+    ]
+
+    for run in runs:
+        cost = billed(run)
+        for name, value in numbers.items():
+            assert getattr(cost, name) == value, f"{type(run).__name__}.{name}"
 
 
 def test_fix_report_records_what_the_attempt_billed(store):
