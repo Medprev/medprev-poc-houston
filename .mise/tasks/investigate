@@ -2,11 +2,12 @@
 #MISE description="Run the real agent on capped new findings -- SPENDS REAL CLAUDE CODE USAGE QUOTA (~$0.63/finding measured, ADR-0024)"
 #USAGE flag "--max-findings <n>" help="Cap on findings to investigate this run" default="5"
 #USAGE flag "--max-budget-usd <amount>" help="Per-finding dollar cap passed to claude -p; defaults to houston/agent.py:DEFAULT_MAX_BUDGET_USD"
+#USAGE flag "--triage <mode>" help="off, or shadow: record a Jev verdict on each report, nothing skipped (ADR-0035)" default="off"
 set -e
 # The dollar cap has one source of truth, houston/agent.py -- pass the flag
 # only when the operator actually set it, so this task cannot pin a stale
 # number the way it did when both sides hardcoded 0.50 (ADR-0024).
-args=(--max-findings "${usage_max_findings:-5}")
+args=(--max-findings "${usage_max_findings:-5}" --triage "${usage_triage:-off}")
 if [ -n "${usage_max_budget_usd:-}" ]; then
   args+=(--max-budget-usd "${usage_max_budget_usd}")
 fi

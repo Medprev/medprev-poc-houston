@@ -1,0 +1,12 @@
+{
+  "model": "jev-1.13.0",
+  "answers": {
+    "decision": {
+      "type": "choice",
+      "choice": "likely_noise",
+      "probabilities": {"investigate": 0.14, "likely_noise": 0.86},
+      "confidence": 0.79
+    }
+  },
+  "usage": {"input_tokens": 412, "output_tokens": 28}
+}

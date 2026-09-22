@@ -51,6 +51,8 @@ O pipeline tem duas fases de agente e três decisões humanas:
 
 8. **Review do PR** — o squad dono do serviço revisa o PR. O agente nunca faz merge — o PR é o gate humano.
 
+   **Triagem em modo sombra (opcional)** — com `--triage shadow` e `TYPESAFE_API_KEY`, cada achado mantido pelo cap recebe um veredito do Jev (TypeSafe) sobre campos estruturados apenas, nunca o corpo nem o `raw`. O veredito é gravado em `triage:` e comparado com a decisão humana em `houston metrics`; nada é pulado (ADR-0035).
+
 9. **Métricas** — `houston metrics` computa, lendo só o front-matter dos relatórios: taxa de falso
    positivo (`discarded` / decididos), gasto total, médio, p50 e p95 (e por estado), percentis de
    token e duração, e se a fase pode fechar. O gasto do fix agent é somado à parte, em
@@ -90,6 +92,7 @@ Task runner: [mise](https://mise.jdx.dev). `mise run <task>`, ou `mise tasks` pa
 | `mise run investigate` | Roda o agente de investigação nos achados novos | **Sim** — ~$0.30–0.42/finding |
 | `mise run promote <fp>` | Imprime o `gh issue create` pronto; com `--create`, abre a issue e grava a URL no report | Não |
 | `mise run fix <fp> --issue <url>` | Roda o agente de correção, abre PR | **Sim** — cap $3.00/fix; o gasto é gravado em `fix_cost` (ADR-0034) |
+| `mise run triage` | Grava um veredito Jev em modo sombra (`investigate` / `likely_noise`) nos reports existentes; `--triage shadow` em `run`/`investigate` faz o mesmo sem pular nada (ADR-0035) | Sim, desprezível — ~$0,00004/veredito, exige `TYPESAFE_API_KEY` |
 | `mise run metrics` | FP rate, gasto (total/médio/p50/p95), percentis de token e duração, prontidão de fase | Não |
 
 ## Ciclo diário (E7)

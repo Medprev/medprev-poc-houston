@@ -28,15 +28,19 @@ from houston.frontmatter import (
     QUARANTINED_STATE,
     Cost,
     Report,
+    Triage,
     WriteResult,
+    load_report,
     record_fix_attempt,
     record_promotion,
+    record_triage,
     split_document,
     write_report,
 )
 from houston.model_runner import ModelRunner
 from houston.models import Finding
 from houston.report_store import DEFAULT_STORE, ReportStore
+from houston.triage import Classifier, triage_or_none
 
 # What the document writers raise when a report on disk is not the shape
 # they expect: no file, no `---` fences, a front-matter key holding a scalar
@@ -234,21 +238,44 @@ class RunPlan:
     needing: int
     kept: list[Finding]
     dropped: int
+    # Shadow-mode verdicts for `kept`, by fingerprint (ADR-0035). A finding
+    # with no entry here was not triaged: triage was off, or it failed open
+    # and the reason is in `triage_warnings`.
+    triage: dict[str, Triage] = field(default_factory=dict)
+    triage_warnings: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def triage_usd(self) -> float:
+        return sum(t.usd for t in self.triage.values())
 
 
 def plan_run(
     collect_fn: CollectFn, *, window_hours: int, max_findings: int,
-    store: ReportStore = DEFAULT_STORE,
+    store: ReportStore = DEFAULT_STORE, classifier: Classifier | None = None,
 ) -> RunPlan:
     """Collects, dedups, and caps -- what `houston investigate` would act
-    on, without spending anything (E4 costs money; this does not)."""
+    on, without spending anything on an investigation (E4 costs money; this
+    does not). With a classifier, each kept finding is also triaged, which
+    bills fractions of a cent and changes nothing about what is kept: the
+    cap runs first, so shadow mode cannot move a finding in or out of it."""
     findings = collect_fn(
         window_hours=window_hours,
         should_enrich=lambda fp: needs_investigation(fp, store),
     )
     new_findings = filter_needing_investigation(findings, store)
     kept, dropped = cap(new_findings, max_findings=max_findings)
-    return RunPlan(total=len(findings), needing=len(new_findings), kept=kept, dropped=dropped)
+    verdicts: dict[str, Triage] = {}
+    warnings: dict[str, str] = {}
+    for finding in kept if classifier is not None else ():
+        verdict, warning = triage_or_none(classifier, Report.from_finding(finding))
+        if verdict is not None:
+            verdicts[finding.fingerprint] = verdict
+        if warning is not None:
+            warnings[finding.fingerprint] = warning
+    return RunPlan(
+        total=len(findings), needing=len(new_findings), kept=kept, dropped=dropped,
+        triage=verdicts, triage_warnings=warnings,
+    )
 
 
 @dataclass(frozen=True)
@@ -283,6 +310,7 @@ def investigate_findings(
     effort: str,
     runner: ModelRunner,
     store: ReportStore = DEFAULT_STORE,
+    classifier: Classifier | None = None,
     on_plan: Callable[[RunPlan], None] = lambda *_: None,
     on_start: Callable[[int, int, Finding], None] = lambda *_: None,
     on_result: Callable[[InvestigationOutcome], None] = lambda *_: None,
@@ -304,7 +332,10 @@ def investigate_findings(
     `on_result` after each report is written, so every cost line stays
     attached to the finding that produced it. A caller with no callbacks
     still gets every outcome back at the end."""
-    plan = plan_run(collect_fn, window_hours=window_hours, max_findings=max_findings, store=store)
+    plan = plan_run(
+        collect_fn, window_hours=window_hours, max_findings=max_findings,
+        store=store, classifier=classifier,
+    )
     on_plan(plan)
     outcomes: list[InvestigationOutcome] = []
     for i, finding in enumerate(plan.kept, 1):
@@ -321,6 +352,7 @@ def investigate_findings(
         else:
             report = Report.from_finding(finding, state="new", body=result.body)
         report.cost = billed(result)
+        report.triage = plan.triage.get(finding.fingerprint)
         write_result = write_report(report, store)
         outcome = InvestigationOutcome(
             finding=finding, write=write_result,
@@ -329,6 +361,53 @@ def investigate_findings(
         outcomes.append(outcome)
         on_result(outcome)
     return InvestigationRun(plan=plan, outcomes=outcomes)
+
+
+# ---------------------------------------------------------------------------
+# triage backfill
+# ---------------------------------------------------------------------------
+
+# Where a backfilled verdict is worth having: `promoted`/`discarded` carry
+# the human decision it is measured against, `seeded` is the backlog it
+# would rank. `quarantined` is left out -- its `reason` may be the literal
+# "redacted" -- and `new`/`incomplete` get a verdict on their next run.
+DEFAULT_TRIAGE_STATES = ("promoted", "discarded", "seeded")
+
+
+@dataclass(frozen=True)
+class TriageOutcome:
+    fingerprint: str
+    state: str
+    triage: Triage | None
+    warning: str | None = None
+
+
+def triage_reports(
+    classifier: Classifier, *, states: tuple[str, ...] = DEFAULT_TRIAGE_STATES,
+    retriage: bool = False, limit: int | None = None,
+    store: ReportStore = DEFAULT_STORE,
+    on_result: Callable[[TriageOutcome], None] = lambda *_: None,
+) -> list[TriageOutcome]:
+    """Records a shadow-mode verdict on reports already on disk (ADR-0035).
+
+    Jev sees only `triage.triage_state`'s whitelist -- the same fields it
+    would have seen before the investigation ran -- so a verdict on a
+    decided report is a fair test of the decision, not a restatement of it.
+    Reports that already carry a verdict are skipped unless `retriage`."""
+    outcomes: list[TriageOutcome] = []
+    for path in store.iter_paths():
+        if limit is not None and len(outcomes) >= limit:
+            break
+        report = load_report(path)
+        if report.state not in states or (report.triage and not retriage):
+            continue
+        verdict, warning = triage_or_none(classifier, report)
+        if verdict is not None:
+            record_triage(path, verdict)
+        outcome = TriageOutcome(report.fingerprint, report.state, verdict, warning)
+        outcomes.append(outcome)
+        on_result(outcome)
+    return outcomes
 
 
 # ---------------------------------------------------------------------------

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 #MISE description="Collect + dedup + cap, print what would be investigated (read-only, free)"
 #USAGE flag "--window-hours <hours>" help="Collection window in hours" default="96"
+#USAGE flag "--triage <mode>" help="off, or shadow: a Jev verdict per kept finding, nothing skipped (ADR-0035)" default="off"
 set -e
-python -m houston.cli run --window-hours "${usage_window_hours:-96}"
+python -m houston.cli run --window-hours "${usage_window_hours:-96}" --triage "${usage_triage:-off}"

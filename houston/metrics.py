@@ -39,6 +39,18 @@ class Metrics:
     # (ADR-0001).
     fix_usd_total: float = 0.0
     with_fix_run: int = 0
+    # Shadow-mode triage (ADR-0035): what it billed, and how its verdict
+    # lines up with the human decision on reports that have one, keyed
+    # (decision, state). `noise_on_promoted` is the one cell that decides
+    # whether triage may ever skip an investigation: a finding a human
+    # filed as an issue that triage would have called noise.
+    triaged: int = 0
+    triage_usd_total: float = 0.0
+    triage_agreement: dict[tuple[str, str], int] = field(default_factory=dict)
+
+    @property
+    def noise_on_promoted(self) -> int:
+        return self.triage_agreement.get(("likely_noise", "promoted"), 0)
 
     @property
     def usd_grand_total(self) -> float:
@@ -77,6 +89,12 @@ def compute(reports: list[Report]) -> Metrics:
     spends = [r.cost.usd for r in reports]
     paid = [v for v in spends if v]
     fix_spends = [r.fix_cost.usd for r in reports if r.fix_cost]
+    triaged = [r for r in reports if r.triage]
+    agreement: dict[tuple[str, str], int] = {}
+    for r in triaged:
+        if r.state in ("promoted", "discarded"):
+            key = (r.triage.decision, r.state)
+            agreement[key] = agreement.get(key, 0) + 1
 
     return Metrics(
         total=len(reports),
@@ -99,6 +117,9 @@ def compute(reports: list[Report]) -> Metrics:
         usd_by_state=usd_by_state,
         fix_usd_total=sum(fix_spends),
         with_fix_run=len(fix_spends),
+        triaged=len(triaged),
+        triage_usd_total=sum(r.triage.usd for r in triaged),
+        triage_agreement=agreement,
     )
 
 

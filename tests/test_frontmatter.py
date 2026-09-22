@@ -7,6 +7,7 @@ from pathlib import Path
 from houston.frontmatter import (
     Cost,
     Report,
+    Triage,
     load_report,
     record_fix_attempt,
     record_promotion,
@@ -150,6 +151,11 @@ def test_from_markdown_recovers_every_field_to_markdown_rendered():
         cache_read_input_tokens=80000, cache_creation_input_tokens=3000,
         model="claude-sonnet-5",
     )
+    report.triage = Triage(
+        decision="likely_noise", confidence=0.79,
+        probabilities={"investigate": 0.14, "likely_noise": 0.86},
+        model="jev-1.13.0", input_tokens=412, usd=0.0000173,
+    )
 
     # Without this, the test passes vacuously for exactly the drift it exists
     # to catch: a field rendered but not parsed falls to its default on both
@@ -159,6 +165,9 @@ def test_from_markdown_recovers_every_field_to_markdown_rendered():
             assert getattr(report, f.name) != f.default, f"{f.name} is not exercised"
     for f in dataclasses.fields(report.cost):
         assert getattr(report.cost, f.name) != f.default, f"cost.{f.name} not exercised"
+    for f in dataclasses.fields(report.triage):
+        if f.default is not dataclasses.MISSING:
+            assert getattr(report.triage, f.name) != f.default, f"triage.{f.name} not exercised"
 
     assert Report.from_markdown(report.to_markdown()) == report
 

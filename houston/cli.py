@@ -23,6 +23,7 @@ from houston.fix_agent import resolve_repo
 from houston.metrics import BLOCKING_STATES, can_close_phase, compute, load_all_reports
 from houston.model_runner import DEFAULT_RUNNER
 from houston.pipeline import (
+    DEFAULT_TRIAGE_STATES,
     PipelineError,
     PromotionBlocked,
     build_promote_command,
@@ -31,7 +32,9 @@ from houston.pipeline import (
     plan_run,
     promote_report,
     seed,
+    triage_reports,
 )
+from houston.triage import JevClassifier, band
 
 ISSUE_REPO = "Medprev/medprev-product-backlog"
 ISSUE_LABEL = "AIOPS"
@@ -49,13 +52,66 @@ def cmd_seed(args: argparse.Namespace) -> int:
     return 0
 
 
+def _classifier(mode: str):
+    """None for `--triage off`; the Jev classifier for `shadow`. Raises
+    RuntimeError when the key is missing, so the command refuses before
+    collecting rather than silently running untriaged (ADR-0035)."""
+    return JevClassifier.from_env() if mode == "shadow" else None
+
+
+def _verdict_line(triage) -> str:
+    return (f"triage={triage.decision} conf={triage.confidence:.2f} "
+            f"({band(triage.confidence)})")
+
+
+def _print_triage_warnings(warnings: dict[str, str]) -> None:
+    for fingerprint, warning in warnings.items():
+        print(f"  WARNING: {fingerprint} not triaged: {warning}", file=sys.stderr)
+
+
 def cmd_run(args: argparse.Namespace) -> int:
-    plan = plan_run(collect, window_hours=args.window_hours, max_findings=args.max_findings)
+    try:
+        classifier = _classifier(args.triage)
+    except RuntimeError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    plan = plan_run(collect, window_hours=args.window_hours, max_findings=args.max_findings,
+                    classifier=classifier)
     print(f"{plan.total} findings total, {plan.needing} needing investigation, "
           f"{len(plan.kept)} to investigate, {plan.dropped} dropped by cap")
     for f in plan.kept:
-        print(f"  {f.fingerprint}  {f.service}  {f.reason}  count={f.observed_count}")
+        verdict = plan.triage.get(f.fingerprint)
+        suffix = f"  {_verdict_line(verdict)}" if verdict else ""
+        print(f"  {f.fingerprint}  {f.service}  {f.reason}  count={f.observed_count}{suffix}")
+    _print_triage_warnings(plan.triage_warnings)
+    if classifier is not None:
+        print(f"triage spend: ${plan.triage_usd:.6f} (shadow -- nothing skipped)")
     return 0
+
+
+def cmd_triage(args: argparse.Namespace) -> int:
+    """Backfills shadow-mode verdicts on reports already on disk, so the
+    agreement with human decisions can be measured before any live run."""
+    try:
+        classifier = JevClassifier.from_env()
+    except RuntimeError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+
+    def on_result(outcome):
+        if outcome.triage:
+            print(f"  {outcome.fingerprint} [{outcome.state}]  {_verdict_line(outcome.triage)}")
+        else:
+            print(f"  WARNING: {outcome.fingerprint} not triaged: {outcome.warning}",
+                  file=sys.stderr)
+
+    states = tuple(s.strip() for s in args.states.split(",") if s.strip())
+    outcomes = triage_reports(classifier, states=states, retriage=args.retriage,
+                              limit=args.limit, on_result=on_result)
+    done = [o for o in outcomes if o.triage]
+    print(f"triaged {len(done)} of {len(outcomes)} report(s), "
+          f"spend ${sum(o.triage.usd for o in done):.6f}")
+    return 0 if len(done) == len(outcomes) else 1
 
 
 def cmd_metrics(args: argparse.Namespace) -> int:
@@ -80,6 +136,13 @@ def cmd_metrics(args: argparse.Namespace) -> int:
     if m.with_fix_run:
         print(f"fix spend: ${m.fix_usd_total:.4f} over {m.with_fix_run} report(s)  "
               f"— investigation + fix: ${m.usd_grand_total:.4f}")
+    if m.triaged:
+        agreement = "  ".join(
+            f"{decision}/{state}={count}"
+            for (decision, state), count in sorted(m.triage_agreement.items())
+        ) or "no decided report triaged yet"
+        print(f"triage (shadow): {m.triaged} report(s), ${m.triage_usd_total:.6f}  "
+              f"vs human: {agreement}  -- noise on promoted: {m.noise_on_promoted}")
     print(f"input tokens  p50={m.input_tokens_p50:.0f}  p95={m.input_tokens_p95:.0f}")
     print(f"duration (s)  p50={m.duration_s_p50:.1f}  p95={m.duration_s_p95:.1f}")
 
@@ -98,12 +161,22 @@ def cmd_metrics(args: argparse.Namespace) -> int:
 def cmd_investigate(args: argparse.Namespace) -> int:
     """Runs the E4 agent for real, one claude -p subprocess per finding.
     Costs money/quota per ADR-0001 -- default cap is deliberately small."""
+    try:
+        classifier = _classifier(args.triage)
+    except RuntimeError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+
     def on_plan(plan):
+        _print_triage_warnings(plan.triage_warnings)
         if not plan.kept:
             return
         print(f"investigating {len(plan.kept)} of {plan.needing} findings needing it "
               f"({plan.dropped} dropped by cap) -- {args.model} @ effort {args.effort}, "
               f"max ${args.max_budget_usd} each, {args.timeout_s}s timeout each")
+        if classifier is not None:
+            print(f"triage (shadow, nothing skipped): {len(plan.triage)} verdict(s), "
+                  f"${plan.triage_usd:.6f}")
 
     def on_start(i, total, finding):
         print(f"  [{i}/{total}] {finding.fingerprint} ({finding.service}, "
@@ -128,7 +201,7 @@ def cmd_investigate(args: argparse.Namespace) -> int:
         window_hours=args.window_hours, max_findings=args.max_findings,
         max_budget_usd=args.max_budget_usd, timeout_s=args.timeout_s,
         model=args.model, effort=args.effort, runner=DEFAULT_RUNNER,
-        on_plan=on_plan, on_start=on_start, on_result=on_result,
+        classifier=classifier, on_plan=on_plan, on_start=on_start, on_result=on_result,
     )
     if not run.plan.kept:
         print("nothing needs investigation")
@@ -296,7 +369,18 @@ def main(argv: list[str] | None = None) -> int:
     run_p = sub.add_parser("run", help="collect, dedup, cap — print what would be investigated")
     run_p.add_argument("--window-hours", type=int, default=96)
     run_p.add_argument("--max-findings", type=int, default=15)
+    run_p.add_argument("--triage", choices=["off", "shadow"], default="off",
+                       help="shadow: ask Jev for a verdict per kept finding, change nothing "
+                            "(ADR-0035; needs TYPESAFE_API_KEY)")
     run_p.set_defaults(func=cmd_run)
+
+    triage_p = sub.add_parser("triage", help="record shadow-mode Jev verdicts on existing reports")
+    triage_p.add_argument("--states", default=",".join(DEFAULT_TRIAGE_STATES),
+                          help="comma-separated report states to triage")
+    triage_p.add_argument("--retriage", action="store_true",
+                          help="replace verdicts already on disk")
+    triage_p.add_argument("--limit", type=int, default=None)
+    triage_p.set_defaults(func=cmd_triage)
 
     metrics_p = sub.add_parser("metrics", help="compute FP rate, cost, and phase-close readiness")
     metrics_p.set_defaults(func=cmd_metrics)
@@ -313,6 +397,9 @@ def main(argv: list[str] | None = None) -> int:
                             "settings -- raise --max-budget-usd if you move up a tier")
     inv_p.add_argument("--effort", default=AGENT_DEFAULT_EFFORT,
                        choices=["low", "medium", "high", "xhigh", "max"])
+    inv_p.add_argument("--triage", choices=["off", "shadow"], default="off",
+                       help="shadow: record a Jev verdict on each report, skip nothing "
+                            "(ADR-0035; needs TYPESAFE_API_KEY)")
     inv_p.set_defaults(func=cmd_investigate)
 
     promote_p = sub.add_parser("promote", help="print a ready gh issue create for a report; --create files it")

@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+#MISE description="Record shadow-mode Jev triage verdicts on existing reports -- billed by TypeSafe, fractions of a cent per report (ADR-0035)"
+#USAGE flag "--states <states>" help="Comma-separated report states to triage" default="promoted,discarded,seeded"
+#USAGE flag "--retriage" help="Replace verdicts already on disk"
+#USAGE flag "--limit <n>" help="Stop after this many reports"
+set -e
+args=(--states "${usage_states:-promoted,discarded,seeded}")
+if [ -n "${usage_retriage:-}" ]; then
+  args+=(--retriage)
+fi
+if [ -n "${usage_limit:-}" ]; then
+  args+=(--limit "${usage_limit}")
+fi
+python -m houston.cli triage "${args[@]}"

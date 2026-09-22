@@ -2,7 +2,7 @@
 name: medprev-poc-houston-mise
 description: >-
   medprev-poc-houston task runner -- all repeatable workflows (setup, lint, test, and the houston
-  pipeline itself: run, seed, investigate, promote, metrics) run through mise as `mise run <task>`.
+  pipeline itself: run, seed, investigate, promote, triage, metrics) run through mise as `mise run <task>`.
   Use whenever running, adding, or debugging a setup/lint/test/pipeline command in this repo, or when
   tempted to `python -m houston.cli ...` or `source .venv/bin/activate && pytest ...` directly -- that
   means reaching for the mise task instead. Single toolchain (Python), flat task names, no namespace.
@@ -31,6 +31,9 @@ venv consistently.
   a number pinned in a doc is exactly the drift ADR-0024 measured and fixed. `mise run metrics`
   reports what runs have actually cost.
 - `mise run promote <fingerprint>` -- print (never run) a ready `gh issue create` for one report.
+- `mise run triage` -- record shadow-mode Jev verdicts on existing reports (ADR-0035). Needs
+  `TYPESAFE_API_KEY`; billed by TypeSafe at fractions of a cent. `run`/`investigate` take
+  `--triage shadow` to do the same for kept findings -- nothing is ever skipped.
 - `mise run metrics` -- false-positive rate, cost percentiles, and whether the phase can close (refuses
   while any report is `state: new`).
 

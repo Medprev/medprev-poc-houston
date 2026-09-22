@@ -42,3 +42,6 @@ def no_real_datadog_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
     otherwise silently pick up whatever's in a developer's .env."""
     monkeypatch.delenv("DD_API_KEY", raising=False)
     monkeypatch.delenv("DD_APP_KEY", raising=False)
+    # Same promise for triage (ADR-0035): a real key in .env must never
+    # turn a test into a billed Jev request.
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)

@@ -78,6 +78,43 @@ def _cost_from(block: dict | None) -> Cost:
 
 
 @dataclass
+class Triage:
+    """One pre-investigation verdict from `houston/triage.py` (ADR-0035).
+    Shadow mode: recorded and measured, never acted on. `usd` is computed by
+    code from the billed input tokens, like every other cost here."""
+    decision: str  # "investigate" | "likely_noise"
+    confidence: float
+    probabilities: dict[str, float] = field(default_factory=dict)
+    model: str | None = None
+    input_tokens: int = 0
+    usd: float = 0.0
+
+
+def _triage_block(triage: Triage) -> dict:
+    return {
+        "decision": triage.decision,
+        "confidence": triage.confidence,
+        "probabilities": dict(triage.probabilities),
+        "model": triage.model,
+        "input_tokens": triage.input_tokens,
+        "usd": triage.usd,
+    }
+
+
+def _triage_from(block: dict | None) -> "Triage | None":
+    if not block:
+        return None
+    return Triage(
+        decision=block.get("decision", ""),
+        confidence=block.get("confidence") or 0.0,
+        probabilities=dict(block.get("probabilities") or {}),
+        model=block.get("model"),
+        input_tokens=block.get("input_tokens") or 0,
+        usd=block.get("usd") or 0.0,
+    )
+
+
+@dataclass
 class Report:
     fingerprint: str
     source: str
@@ -110,6 +147,9 @@ class Report:
     # investigation -- and a dollar figure is uninterpretable without the
     # model that produced it (ADR-0023). None until a fix runs.
     fix_cost: Cost | None = None
+    # The shadow-mode triage verdict (ADR-0035). None until one is recorded,
+    # and rendered only when present, for the same reason as `fix_cost`.
+    triage: Triage | None = None
 
     @classmethod
     def from_finding(cls, finding: Finding, environment: str = "production",
@@ -161,6 +201,8 @@ class Report:
         if self.fix_cost is not None:
             front_matter["fix_attempts"] = self.fix_attempts
             front_matter["fix_cost"] = _cost_block(self.fix_cost)
+        if self.triage is not None:
+            front_matter["triage"] = _triage_block(self.triage)
         yaml_block = yaml.safe_dump(front_matter, sort_keys=False, allow_unicode=True)
         # Injected here, not asked from the model: this is the authoritative
         # URL the collector already computed, not something the agent should
@@ -218,6 +260,7 @@ class Report:
                 _cost_from(front_matter["fix_cost"])
                 if front_matter.get("fix_cost") else None
             ),
+            triage=_triage_from(front_matter.get("triage")),
         )
 
 
@@ -405,3 +448,13 @@ def record_fix_attempt(
         _accumulated(_cost_from(front_matter.get("fix_cost")), cost)
     )
     _write_document(path, {**front_matter, **fields}, body)
+
+
+def record_triage(path: Path, triage: Triage) -> None:
+    """A verdict on a report that already exists -- the `houston triage`
+    backfill. Replaces any earlier verdict: the newest is the one measured.
+    Patched, not re-rendered, for the reason `_write_document` gives, and
+    code-shaped like `fix_cost`: a label from a closed set and numbers, no
+    free model text."""
+    front_matter, body = split_document(path.read_text())
+    _write_document(path, {**front_matter, "triage": _triage_block(triage)}, body)
