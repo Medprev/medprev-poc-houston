@@ -56,8 +56,8 @@ flowchart TD
 
     subgraph REVIEW["8 — Review humano do PR"]
         AA --> BB{reviewer}
-        BB -->|aprovado + merged| CC["fix_state: merged"]
-        BB -->|rejeitado| DD["fix_state: rejected"]
+        BB -->|aprovado + merged| CC["fix_state: merged<br>(sem escritor: humano edita o arquivo)"]
+        BB -->|rejeitado| DD["fix_state: rejected<br>(sem escritor: humano edita o arquivo)"]
         DD -->|retry?| U
     end
 

@@ -23,6 +23,7 @@ from houston.agent import (
     _payload_or_none,
 )
 from houston.model_runner import DEFAULT_RUNNER, ModelRun, ModelRunner
+from houston.report_state import FixState
 from houston.service_repos import (  # noqa: F401 -- re-exported for callers/tests
     load_service_repos,
     resolve_repo,
@@ -83,7 +84,7 @@ class FixResult:
     output_tokens: int
     duration_s: float
     usd: float
-    state: str  # "pr_open" | "incomplete"
+    state: str  # FixState.PR_OPEN | FixState.INCOMPLETE -- the two this writes
     error: str | None = None
     branch: str | None = None
     cache_read_input_tokens: int = 0
@@ -242,7 +243,7 @@ def fix(
     if outcome.timed_out:
         partial = _payload_or_none(outcome.stdout)
         return _result(
-            partial, "incomplete", branch=branch,
+            partial, FixState.INCOMPLETE, branch=branch,
             error=_error_text(partial, "", prefix=f"timed out after {timeout_s}s"),
             fallback_duration_s=float(timeout_s), requested_model=model,
         )
@@ -251,7 +252,7 @@ def fix(
 
     if payload is None:
         return _result(
-            None, "incomplete", branch=branch,
+            None, FixState.INCOMPLETE, branch=branch,
             error=f"non-JSON stdout: {outcome.stdout[:500]}",
             requested_model=model,
         )
@@ -264,15 +265,16 @@ def fix(
     # strongest signal; non-zero exit without one is incomplete.
     if pr_url:
         return _result(
-            payload, "pr_open", pr_url=pr_url, branch=branch, requested_model=model,
+            payload, FixState.PR_OPEN, pr_url=pr_url, branch=branch,
+            requested_model=model,
         )
 
     if outcome.returncode != 0 or payload.get("is_error") or not result_text:
         return _result(
-            payload, "incomplete", branch=branch,
+            payload, FixState.INCOMPLETE, branch=branch,
             error=_error_text(payload, outcome.stderr), requested_model=model,
         )
 
-    return _result(payload, "incomplete", branch=branch,
+    return _result(payload, FixState.INCOMPLETE, branch=branch,
                    error="agent finished but no PR URL found in output",
                    requested_model=model)

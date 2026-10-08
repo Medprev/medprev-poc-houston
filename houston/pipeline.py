@@ -21,7 +21,7 @@ from houston.dedup import (
     cap,
     filter_needing_investigation,
     filter_new,
-    needs_investigation,
+    report_needs_investigation,
 )
 from houston.fix_agent import FixResult
 from houston.frontmatter import (
@@ -36,6 +36,7 @@ from houston.frontmatter import (
 )
 from houston.model_runner import ModelRunner
 from houston.models import Finding
+from houston.report_state import ReportState
 from houston.report_store import DEFAULT_STORE, ReportStore
 
 # What the document writers raise when a report on disk is not the shape
@@ -212,7 +213,7 @@ def seed(
     written = 0
     quarantined: list[tuple[str, list[str]]] = []
     for finding in new_findings:
-        report = Report.from_finding(finding, state="seeded", body=(
+        report = Report.from_finding(finding, state=ReportState.SEEDED, body=(
             "Semeado na primeira rodada — dívida pré-existente, ainda não investigada. "
             "Este achado já tinha atividade antes do Houston começar a rastreá-lo."
         ))
@@ -244,7 +245,7 @@ def plan_run(
     on, without spending anything (E4 costs money; this does not)."""
     findings = collect_fn(
         window_hours=window_hours,
-        should_enrich=lambda fp: needs_investigation(fp, store),
+        should_enrich=lambda fp: report_needs_investigation(fp, store),
     )
     new_findings = filter_needing_investigation(findings, store)
     kept, dropped = cap(new_findings, max_findings=max_findings)
@@ -314,12 +315,12 @@ def investigate_findings(
             finding, max_budget_usd=max_budget_usd, timeout_s=timeout_s,
             target_repo=target_repo, model=model, effort=effort, runner=runner,
         )
-        if result.state == "incomplete":
-            report = Report.from_finding(finding, state="incomplete", body=(
+        if result.state == ReportState.INCOMPLETE:
+            report = Report.from_finding(finding, state=ReportState.INCOMPLETE, body=(
                 f"Investigação não foi concluída: {result.error}"
             ))
         else:
-            report = Report.from_finding(finding, state="new", body=result.body)
+            report = Report.from_finding(finding, state=ReportState.NEW, body=result.body)
         report.cost = billed(result)
         write_result = write_report(report, store)
         outcome = InvestigationOutcome(
@@ -448,7 +449,7 @@ def fix_report(
 
     text = path.read_text()
     report = Report.from_markdown(text)
-    if report.state != "promoted":
+    if report.state != ReportState.PROMOTED:
         raise PipelineError(f"report state is '{report.state}', not 'promoted'")
 
     issue_url = issue or report.issue

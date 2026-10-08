@@ -20,7 +20,7 @@ from houston.fix_agent import DEFAULT_EFFORT as FIX_DEFAULT_EFFORT
 from houston.fix_agent import DEFAULT_MODEL as FIX_DEFAULT_MODEL
 from houston.fix_agent import fix as agent_fix
 from houston.fix_agent import resolve_repo
-from houston.metrics import BLOCKING_STATES, can_close_phase, compute, load_all_reports
+from houston.metrics import can_close_phase, compute, load_all_reports
 from houston.model_runner import DEFAULT_RUNNER
 from houston.pipeline import (
     PipelineError,
@@ -32,6 +32,7 @@ from houston.pipeline import (
     promote_report,
     seed,
 )
+from houston.report_state import BLOCKING, blocks_phase
 
 ISSUE_REPO = "Medprev/medprev-product-backlog"
 ISSUE_LABEL = "AIOPS"
@@ -66,7 +67,7 @@ def cmd_metrics(args: argparse.Namespace) -> int:
     m = compute(reports)
     print(f"total reports: {m.total}")
     for state, count in sorted(m.by_state.items()):
-        print(f"  {state}: {count}")
+        print(f"  {state or '<no state>'}: {count}")
     fp = f"{m.false_positive_rate:.1%}" if m.false_positive_rate is not None else "n/a (no promoted+discarded yet)"
     print(f"false-positive rate: {fp}")
     print(f"reports carrying an issue link: {m.with_issue_link}")
@@ -85,13 +86,17 @@ def cmd_metrics(args: argparse.Namespace) -> int:
 
     can_close, pending = can_close_phase(reports)
     if not can_close:
+        # Built from the states actually on disk, not from BLOCKING: a state
+        # this package cannot read blocks the phase (ADR-0035) and would
+        # otherwise print an empty breakdown next to a non-zero count.
         breakdown = ", ".join(
-            f"{m.by_state[state]} {state}"
-            for state in BLOCKING_STATES if m.by_state.get(state)
+            f"{count} {state or '<no state>'}"
+            for state, count in sorted(m.by_state.items())
+            if blocks_phase(state)
         )
         print(f"\nphase CANNOT close: {pending} report(s) still owe work ({breakdown})")
         return 1
-    print(f"\nphase can close: no report left in {'/'.join(BLOCKING_STATES)}")
+    print(f"\nphase can close: no report left in {'/'.join(BLOCKING)}")
     return 0
 
 

@@ -101,7 +101,7 @@ def test_pii_hit_leaves_a_redacted_record_so_the_finding_is_not_re_investigated(
     learned the finding had been handled, so cap() -- which orders by
     descending volume -- put the same high-volume finding back at the front
     of the queue on the next run, at ~$0.32 a time, invisibly (ADR-0015)."""
-    from houston.dedup import needs_investigation
+    from houston.dedup import report_needs_investigation
 
     report = Report.from_finding(
         _finding("et-dirty"), body="Contact carla.cury@medprevonline.com for details.",
@@ -116,7 +116,7 @@ def test_pii_hit_leaves_a_redacted_record_so_the_finding_is_not_re_investigated(
     assert recorded.state == "quarantined"
     assert recorded.cost.usd == 0.32  # the spend stays visible to metrics
     assert "carla.cury@medprevonline.com" not in result.record_path.read_text()
-    assert needs_investigation("et-dirty") is False
+    assert report_needs_investigation("et-dirty") is False
 
 
 def test_written_report_round_trips_through_load_report(store):

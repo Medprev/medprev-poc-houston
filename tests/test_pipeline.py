@@ -29,6 +29,7 @@ from houston.pipeline import (
     promotion_blockers,
     seed,
 )
+from houston.report_state import FixState
 from houston.report_store import ReportStore
 
 
@@ -402,6 +403,38 @@ def test_billed_maps_every_number_both_agent_runs_report():
         cost = billed(run)
         for name, value in numbers.items():
             assert getattr(cost, name) == value, f"{type(run).__name__}.{name}"
+
+
+def test_fix_report_records_a_state_the_agent_returned_as_an_enum_member(store):
+    """The whole chain as it really runs: `fix_agent.fix` returns
+    `FixState.PR_OPEN`, `fix_report` forwards it, `record_fix_attempt`
+    writes it. Each layer type-checks, because a StrEnum member satisfies
+    `str` -- and `yaml.safe_dump` raised RepresenterError at the end of it,
+    which `WRITE_BACK_ERRORS` then turned into a warning. A green suite, a
+    paid run, and nothing on disk. No warning is the assertion here."""
+    finding = _finding("et-enum-state", service="medprev-rest-api")
+    write_report(Report.from_finding(finding, state="promoted", body="## Causa raiz\nfoo"))
+
+    def fix_fn(**kwargs):
+        return FixResult(
+            pr_url="https://github.com/org/repo/pull/3", body="fixed",
+            input_tokens=1, output_tokens=1, duration_s=1.0, usd=1.5,
+            state=FixState.PR_OPEN, branch="houston/fix/et-enum-state",
+        )
+
+    warnings = []
+    fix_report(
+        "et-enum-state", issue="https://github.com/org/repo/issues/1", fix_fn=fix_fn,
+        resolve_repo_fn=lambda service, body="": {"repo": "org/repo", "path": "/tmp/fake"},
+        runner=object(), max_budget_usd="3.00", timeout_s=600, model="sonnet",
+        effort="high", notify_fn=lambda url, msg: None, on_warning=warnings.append,
+    )
+
+    assert warnings == []
+    parsed = load_report(store / "et-enum-state.md")
+    assert parsed.fix_state == "pr_open"
+    assert parsed.fix_pr == "https://github.com/org/repo/pull/3"
+    assert parsed.fix_cost.usd == 1.5
 
 
 def test_fix_report_survives_a_record_failure_after_a_paid_run(store):

@@ -19,12 +19,13 @@ sys.path.insert(0, str(ROOT))
 
 from houston.frontmatter import Report
 from houston.metrics import compute, load_all_reports
+from houston.report_state import DISPLAY_ORDER
 
 # Named "site/", not "docs/" — this repo's docs/ already holds ADRs and the
 # E0 verification writeup; the generated Pages output needs its own folder.
 OUTPUT_DIR = ROOT / "site"
 
-_STATE_ORDER = ["new", "incomplete", "quarantined", "promoted", "discarded", "seeded"]
+_STATE_ORDER = [s.value for s in DISPLAY_ORDER]
 
 
 def _fmt_ms(ms: int | None) -> str:
