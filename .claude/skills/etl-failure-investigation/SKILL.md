@@ -46,28 +46,43 @@ Run each probe; report a one-line table (acesso → ok / falta + como obter). Co
 | Access | Needed for | Probe |
 |---|---|---|
 | Browser session on the Airflow UI (default `https://airflow.medprev.app`, ask if different) | runs, tries, logs | `fetch('/api/v2/dags?limit=1')` in that tab returns 200 |
-| AWS credentials (any profile/SSO/env the operator uses) | ECR digests, image pull | `aws sts get-caller-identity`; `aws ecr describe-repositories` on the ETL repos. If it fails, ask which profile to use |
-| kube context for the production cluster running Airflow | pull events, running digests | find it in `kubectl config get-contexts`, confirm with `kubectl get pods -n medprev-analytics-etl-airflow` |
+| AWS credentials (any profile/SSO/env the operator uses) | ECR tags and push times, pulling digests not cached locally | `aws sts get-caller-identity`; `aws ecr describe-repositories` on the ETL repos |
+| kube context for the production cluster running Airflow | pull events, digests running now | find it in `kubectl config get-contexts`, confirm with `kubectl get pods -n medprev-analytics-etl-airflow`. EKS contexts authenticate through `aws`: when AWS fails, kube fails with it |
+| Local docker image cache | step 5–6 without AWS | `docker images --digests` on the ETL repos |
 | Datadog MCP | pod `image_id`, logs across time | one `search_datadog_logs` on the namespace |
 | Slack MCP | read alert thread | `slack_read_thread` |
 | `gh` authenticated with access to the `Medprev` org | code, PRs, issue search | `gh api orgs/Medprev --jq .login` |
 | Local clone of `medprev-analytics-etl` | code at `origin/main` | ask for the path or find it; `git fetch` |
 
-Registry and region come from `ECR_REGISTRY` / `AWS_REGION` in that clone's `.env.defaults.yaml`, never
+Registry and region come from `ECR_REGISTRY` / `AWS_REGION` in `.env.defaults.yaml` read from
+`origin/main` (`git show origin/main:.env.defaults.yaml` — a stale working tree may not have it), never
 hard-coded.
+
+A missing access never stops the investigation: continue with every step that does not need it, mark the
+skipped checks under "não verificado", and put one question at the end of the report ("Qual perfil AWS
+devo usar, ou pode renovar o login?") instead of blocking on it.
 
 ## Step 1 — Read the alert
 
 From the thread: the DAG display names, the alert time, and any human replies. Record the lag between the
 first failure (step 2) and the alert — it belongs in the timeline.
 
+**Is it already handled?** Read the replies and search the backlog (`gh issue list -R
+Medprev/medprev-product-backlog --search "<dag or error>" --state all`). If a cause, a fix or an issue
+already exists, the job becomes *verify and complete*: confirm or correct what was said with your evidence,
+and draft a comment on the existing issue / a complement to the thread — never a duplicate.
+
 ## Step 2 — Airflow: what failed, and since when
 
 For every DAG named (snippets in [evidence-commands.md](references/evidence-commands.md#2-airflow)):
 
-1. Last runs, newest first: find the **first failed** run and the **last successful** one.
-2. Task instances of the failed run with `try_number`, start and end.
-3. `dag_versions[].created_at` of both runs: did the DAG itself change between them?
+1. Last runs, newest first: find the **first failed** run and the **last successful** one. A run that was
+   cleared and reprocessed shows `success` now — its failures survive only in the per-task **tries**
+   endpoint and in the logs by try number ([snippet](references/evidence-commands.md#2-airflow)).
+2. Task instances of the failed run with every try (start, end, state).
+3. `dag_versions[].created_at` of both runs: did the DAG change between them? A new version without a
+   commit on the DAG file is a re-serialization or bundle refresh, not a code change — it is a cause only
+   if the DAG code diff says so.
 4. Classify each DAG with [references/failure-branches.md](references/failure-branches.md): controller
    (`TriggerDagRunOperator` + `watcher`) → descend to the child DAG runs; leaf → step 3.
 5. Other failed runs in the same window across all DAGs (`~/dagRuns?state=failed`): same cause or unrelated?
@@ -90,7 +105,8 @@ Compare the runtime of the **last success** with the **first failure**, in this 
 explains the error:
 
 1. **Code**: `git log --first-parent origin/main` on the component and the DAG file between the two runs.
-2. **Image**: the digest each pod ran (Datadog `image_id` per `pod_name`), then for each digest its ECR tags,
+2. **Image**: the digest each pod ran (Datadog `image_id` per `pod_name`, **per try**: merges during a
+   run push new images, so one run can span several digests), then for each digest its ECR tags,
    `imagePushedAt` and the image `Created` date. A digest built long before it was pushed means cached
    layers; the first push that *rebuilt* the layer is the trigger.
 3. **Packages**: `pip freeze` diff between the two digests. For the suspect package, its release date on
@@ -141,6 +157,9 @@ Then ask, **one at a time**, and wait for each answer:
 - Browser JS calls time out at ~45 s: one request or a ≤35 s wait per call, never a long polling loop.
 - The Airflow deployment runs **two** image digests across components (api-server/scheduler vs
   worker/triggerer/dag-processor) — compare every digest that runs, not one.
+- One run can execute several digests: on 2026-10-07 merges at 23:02 BRT pushed new `latest` images
+  mid-run, and the failed run ran three. Map digest per try, not per run.
+- A reprocessed run reads `success`; look at tries, not run state, to find the failure.
 - `silver-tape` pod logs reach Datadog as `status:error` (stderr): status is not a signal; read the message.
 - The alert reaches Slack hours after the failure; the incident starts at the first failed try.
 - A PR title or author is not evidence; the diff and the mechanism are.

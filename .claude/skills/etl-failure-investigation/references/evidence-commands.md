@@ -45,6 +45,14 @@ const rid = encodeURIComponent('<dag_run_id>');
 ```
 
 ```js
+// Every try of one task, including tries erased from the run state by a later Clear
+(await j(`/dags/<dag_id>/dagRuns/${rid}/taskInstances/<task_id>/tries`)).task_instances
+  .map(t => [t.try_number, t.state, t.start_date, t.end_date].join(' | ')).join('\n');
+```
+
+Return one short line per task/try; full task-instance objects overflow the tool output.
+
+```js
 // First error of one try (filter, do not dump the whole log)
 const o = JSON.parse(await (await fetch(`/api/v2/dags/<dag_id>/dagRuns/${rid}/taskInstances/<task_id>/logs/<try>?full_content=true`,
   { headers: { Accept: 'application/json' } })).text());
@@ -83,9 +91,10 @@ git -C "$ETL" log origin/main --first-parent --since=<last_success_iso> --until=
 git -C "$ETL" diff --stat <sha>^1 <sha> -- silver-tape                           # what a merge changed there
 ```
 
-**Digest each pod actually ran** (Datadog `analyze_datadog_logs`):
+**Digest each pod actually ran** (Datadog `analyze_datadog_logs`; the Datadog MCP asks to load its
+`datadog/ddsql` skill first):
 
-- filter: `service:medprev-analytics-etl-silver-tape` (or `kube_namespace:$NS`)
+- filter: `service:medprev-analytics-etl-silver-tape pod_name:*<job>*` (or `kube_namespace:$NS`)
 - extra columns: `pod_name` varchar, `image_id` varchar
 - SQL: `SELECT pod_name, image_id, min(timestamp) AS first_log, count(*) AS n FROM logs GROUP BY pod_name, image_id ORDER BY min(timestamp)`
 
@@ -109,7 +118,8 @@ aws ecr describe-images --region "$AWS_REGION" --repository-name <repo> --image-
 docker image inspect "${REPO}@${DIGEST}" --format '{{.Created}}'   # built long before pushed = cached layers
 ```
 
-**Installed packages, failing vs last good digest**:
+**Installed packages, failing vs last good digest** — check the local cache first
+(`docker images --digests | grep <repo>`); a cached digest needs neither AWS nor network:
 
 ```bash
 aws ecr get-login-password --region "$AWS_REGION" | docker login -u AWS --password-stdin "$ECR_REGISTRY"
@@ -125,7 +135,7 @@ diff "$SCRATCH"/freeze-<good>.txt "$SCRATCH"/freeze-<bad>.txt
 
 ```bash
 curl -s https://pypi.org/pypi/<package>/json | python3 -c "import json,sys;d=json.load(sys.stdin)
-print(*sorted(((f[0]['upload_time'],v) for v,f in d['releases'].items() if f),reverse=True)[:6],sep='\n')"
+print(*sorted(((f[0]['upload_time'],v) for v,f in d['releases'].items() if f),reverse=True)[:12],sep='\n')"
 ```
 
 Then read the vendor's changelog / migration guide and quote the line that matches the error.
@@ -135,9 +145,9 @@ Then read the vendor's changelog / migration guide and quote the line that match
 Smallest call that hits the failing path, no network or database. 2026-10-07 example:
 
 ```bash
-docker run --rm --entrypoint python "${REPO}@${BAD}"  -c 'from sqlalchemy import create_engine; create_engine("postgresql://u:p@h:5432/d")'
+docker run --rm --network none --entrypoint python "${REPO}@${BAD}"  -c 'from sqlalchemy import create_engine; create_engine("postgresql://u:p@h:5432/d")'
 # → ModuleNotFoundError: No module named 'psycopg'
-docker run --rm --entrypoint python "${REPO}@${GOOD}" -c 'from sqlalchemy import create_engine; print(create_engine("postgresql://u:p@h:5432/d").dialect.driver)'
+docker run --rm --network none --entrypoint python "${REPO}@${GOOD}" -c 'from sqlalchemy import create_engine; print(create_engine("postgresql://u:p@h:5432/d").dialect.driver)'
 # → psycopg2
 ```
 
