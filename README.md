@@ -103,3 +103,13 @@ mise run promote <fingerprint> --create   # abrir a issue e gravar a URL no repo
 mise run fix <fp> --issue <url>       # corrigir via PR (cap $3.00)
 mise run metrics                      # conferir FP rate e gasto
 ```
+
+## Skills interativas
+
+Algumas investigações dependem de evidência fora do Datadog, por isso não cabem no agente read-only do pipeline (ADR-0035). Elas rodam como skills numa sessão do Claude Code. Postar, abrir issue ou abrir PR sempre exige aprovação de quem está operando.
+
+| Skill | Quando usar | Saída |
+|---|---|---|
+| [`etl-failure-investigation`](.claude/skills/etl-failure-investigation/SKILL.md) | Alerta do n8n "Foram encontrados erros de execução para as seguintes DAGS", link do Airflow ou `dag_id` do `medprev-analytics-etl` que falhou | Relatório em pt-BR (veredito, linha do tempo com fonte, causa com prova, solução, riscos) e rascunhos da resposta na thread e da issue de incidente no product backlog |
+
+A skill usa os acessos de quem a executa: sessão do Airflow no navegador, credenciais AWS, contexto do kubectl, Datadog, Slack e `gh`. Se faltar algum, ela avisa e segue com o resto.
